@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en" data-theme="nolag">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>@nolag/stream SDK Demo</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Nunito+Sans:wght@400;500;600;700&family=Ubuntu:wght@500;700&display=swap" rel="stylesheet" />
+    <link href="https://cdn.jsdelivr.net/npm/daisyui@5" rel="stylesheet" type="text/css" />
+    <link href="https://cdn.jsdelivr.net/npm/daisyui@5/themes.css" rel="stylesheet" type="text/css" />
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <style type="text/tailwindcss">
+      [data-theme="nolag"] {
+        --color-primary: #FF8A00;
+        --color-primary-content: #ffffff;
+        --color-secondary: #3D4D61;
+        --color-secondary-content: #ffffff;
+        --color-accent: #FF8A00;
+        --color-accent-content: #ffffff;
+        --color-neutral: #e6edf3;
+        --color-neutral-content: #0c131c;
+        --color-base-100: #0c131c;
+        --color-base-200: #161b22;
+        --color-base-300: #30363d;
+        --color-base-content: #e6edf3;
+        --color-info: #0969da;
+        --color-info-content: #ffffff;
+        --color-success: #FF8A00;
+        --color-success-content: #ffffff;
+        --color-warning: #FFCB45;
+        --color-warning-content: #19293C;
+        --color-error: #f85149;
+        --color-error-content: #ffffff;
+        --rounded-box: 0.375rem;
+        --rounded-btn: 0.375rem;
+        --rounded-badge: 0.75rem;
+        --animation-btn: 0.1s;
+        --animation-input: 0.2s;
+        --btn-text-case: none;
+        --border-btn: 1px;
+        color-scheme: dark;
+      }
+      body { margin: 0; min-height: 100vh; font-family: 'Nunito Sans', sans-serif; }
+      #app { width: 100%; height: 100vh; }
+      h1,h2,h3,h4,h5,h6,.font-bold,.font-semibold,.text-xl,.text-2xl { font-family: 'Ubuntu', sans-serif; }
+      .fade-in { animation: fadeIn 0.2s ease-in; }
+      @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+      .log-entry { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 0.75rem; padding: 2px 8px; border-left: 3px solid transparent; }
+      .log-entry.event { border-left-color: #FF8A00; }
+      .log-entry.action { border-left-color: #3D4D61; }
+      .log-entry.error { border-left-color: #f85149; }
+
+      /* Floating reactions (Twitch-style) */
+      .floating-reaction {
+        position: absolute;
+        bottom: 0;
+        font-size: 1.5rem;
+        animation: floatUp 2.5s ease-out forwards;
+        pointer-events: none;
+        opacity: 0;
+      }
+      @keyframes floatUp {
+        0% { opacity: 1; transform: translateY(0) scale(1); }
+        50% { opacity: 0.8; transform: translateY(-40vh) scale(1.2); }
+        100% { opacity: 0; transform: translateY(-70vh) scale(0.8); }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

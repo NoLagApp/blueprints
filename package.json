@@ -1,0 +1,25 @@
+{
+  "name": "nolag-blueprints",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "workspaces": ["js/*"],
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "test": "npm run test --workspaces",
+    "typecheck": "npm run typecheck --workspaces",
+    "clean": "rm -rf js/*/dist",
+    "sync-blueprints": "node tools/sync-blueprints/cli.js"
+  },
+  "devDependencies": {
+    "@rollup/plugin-commonjs": "^28.0.1",
+    "@rollup/plugin-node-resolve": "^15.3.0",
+    "@rollup/plugin-terser": "^0.4.4",
+    "@rollup/plugin-typescript": "^12.1.1",
+    "@types/node": "^20.0.0",
+    "rollup": "^4.28.0",
+    "tslib": "^2.8.1",
+    "typescript": "^5.0.0",
+    "vitest": "^2.1.0"
+  }
+}

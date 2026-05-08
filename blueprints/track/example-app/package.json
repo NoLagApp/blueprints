@@ -1,0 +1,18 @@
+{
+  "name": "track-sdk-example-app",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@nolag/track": "file:../../js/track",
+    "@nolag/js-sdk": "^1.1.0"
+  },
+  "devDependencies": {
+    "vite": "^6.0.7"
+  }
+}

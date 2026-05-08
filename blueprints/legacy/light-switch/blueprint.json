@@ -1,0 +1,29 @@
+{
+  "blueprintId": "light-switch",
+  "name": "Light Switch",
+  "description": "Simple IoT light switch demo with real-time state sync and load balancing",
+  "version": "1.0.0",
+  "category": "iot",
+  "tags": ["iot", "pub-sub", "load-balancing"],
+  "difficulty": "beginner",
+  "framework": "vanilla",
+  "dependencies": {
+    "@nolag/js-sdk": "^1.0.0"
+  },
+  "config": {
+    "topics": [
+      {
+        "name": "button-state",
+        "description": "Light on/off state broadcast to all connected clients"
+      }
+    ],
+    "staticRooms": [
+      {
+        "slug": "main",
+        "topics": ["button-state"]
+      }
+    ],
+    "settings": {}
+  },
+  "readme": "# Light Switch\n\n## Description\nA simple IoT-style light switch that syncs state in real-time across all connected browser tabs. Demonstrates basic pub/sub messaging and optional load balancing (round-robin message delivery).\n\n## Getting Started\n1. Install dependencies: `npm install`\n2. Start the dev server: `npm run dev`\n3. Enter your NoLag access token and click Connect\n4. Open in multiple tabs to see the light toggle sync across all of them\n\n## Architecture\n- Single topic (`button-state`) carries the on/off state\n- All clients subscribe to the same room and topic\n- Toggle in one tab broadcasts to all other tabs\n- Optional load balancing mode: only one tab receives each toggle (round-robin)\n\n## NoLag Features Used\n- **Pub/Sub messaging** for real-time state sync\n- **Echo suppression** (echo: false) so the sender doesn't receive its own toggle\n- **Load balancing** with `loadBalance: true` and `loadBalanceGroup` for round-robin delivery\n- **Auto-ACK** for confirming message delivery in load-balanced mode"
+}

@@ -1,0 +1,37 @@
+{
+  "blueprintId": "remote-terminal-web",
+  "name": "Remote Terminal (Web Client)",
+  "description": "Browser-based terminal client with xterm.js that connects to a remote agent via NoLag",
+  "version": "1.0.0",
+  "category": "devtools",
+  "tags": ["terminal", "remote-access", "xterm", "pty", "devtools"],
+  "difficulty": "advanced",
+  "framework": "vanilla",
+  "dependencies": {
+    "@nolag/js-sdk": "^1.0.0",
+    "@xterm/xterm": "^5.5.0",
+    "@xterm/addon-fit": "^0.10.0"
+  },
+  "config": {
+    "topics": [
+      {
+        "name": "commands",
+        "description": "Commands sent from the web client to the remote agent (shell, session_start, session_input, etc.)"
+      },
+      {
+        "name": "responses",
+        "description": "Command responses returned from the agent to the web client"
+      },
+      {
+        "name": "status",
+        "description": "Device status heartbeats broadcast by the agent"
+      },
+      {
+        "name": "session_output",
+        "description": "Interactive PTY session output streamed from the agent to the web client"
+      }
+    ],
+    "settings": {}
+  },
+  "readme": "# Remote Terminal (Web Client)\n\n## Description\nA browser-based terminal emulator that connects to a remote machine through a NoLag-powered agent. Uses xterm.js for terminal rendering and supports full interactive PTY sessions (bash, zsh, PowerShell).\n\nThis is the **web client** component of a multi-part system. You also need one of the agent blueprints running on the target machine:\n- [remote-terminal](../remote-terminal/) -- Go agent + TUI client\n- [remote-terminal-node](../remote-terminal-node/) -- Node.js agent\n- [remote-terminal-python](../remote-terminal-python/) -- Python agent\n\n## Getting Started\n1. Install dependencies: `npm install`\n2. Start the dev server: `npm run dev`\n3. Enter your NoLag access token and the target device ID\n4. The web client will connect and start an interactive shell session\n\n## Architecture\n- **Web client** sends commands on the `commands` topic and receives output on `responses` and `session_output`\n- **Agent** (running on target machine) subscribes to `commands`, executes them, and streams output back\n- Each device gets its own room (room slug = device ID)\n- Interactive sessions use base64-encoded PTY I/O for full terminal emulation\n\n## NoLag Features Used\n- **Pub/Sub messaging** for command/response exchange\n- **Room-per-device** architecture for multi-device support\n- **Reconnection** for resilient connections\n- **Binary-safe messaging** via base64 encoding for PTY data"
+}

@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Test coverage
+coverage/
+
+# Environment
+.env
+.env.local
+.env.test
+
+# Temporary files
+*.tmp
+*.temp
+
+# Lock files (use root package-lock.json only)
+js/*/package-lock.json
+js/*/yarn.lock
+blueprints/*/example-app/package-lock.json
+blueprints/*/example-app/yarn.lock
+blueprints/legacy/*/package-lock.json
+blueprints/legacy/*/yarn.lock

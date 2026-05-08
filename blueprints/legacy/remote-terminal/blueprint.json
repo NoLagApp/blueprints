@@ -1,0 +1,37 @@
+{
+  "blueprintId": "remote-terminal",
+  "name": "Remote Terminal (Go Agent + TUI Client)",
+  "description": "Go-based remote terminal with both a TUI client and an agent, connected via NoLag",
+  "version": "1.0.0",
+  "category": "devtools",
+  "tags": ["terminal", "remote-access", "agent", "go", "tui", "pty", "devtools"],
+  "difficulty": "advanced",
+  "framework": null,
+  "dependencies": {
+    "github.com/NoLagApp/nolag-go": "v1.0.0",
+    "github.com/charmbracelet/bubbletea": "v1.3.10",
+    "github.com/charmbracelet/lipgloss": "v1.1.0"
+  },
+  "config": {
+    "topics": [
+      {
+        "name": "commands",
+        "description": "Commands sent from the client to the agent (shell, session_start, session_input, etc.)"
+      },
+      {
+        "name": "responses",
+        "description": "Command responses returned from the agent to the client"
+      },
+      {
+        "name": "status",
+        "description": "Device status heartbeats broadcast by the agent every 30 seconds"
+      },
+      {
+        "name": "session_output",
+        "description": "Interactive PTY session output streamed from the agent to the client"
+      }
+    ],
+    "settings": {}
+  },
+  "readme": "# Remote Terminal (Go Agent + TUI Client)\n\n## Description\nA Go-based remote terminal system with two binaries: an **agent** that runs on the target machine and a **TUI client** (Bubbletea) for connecting from your local terminal. Supports shell commands, interactive PTY sessions, file transfer, tab completion, device discovery, and command history.\n\nThis blueprint includes both the agent and a terminal-based client. For a browser-based client, use:\n- [remote-terminal-web](../remote-terminal-web/) -- Browser-based terminal client\n\nAlternative agents are available in other languages:\n- [remote-terminal-node](../remote-terminal-node/) -- Node.js agent\n- [remote-terminal-python](../remote-terminal-python/) -- Python agent\n\n## Getting Started\n\n### Agent (run on target machine)\n1. Download or clone this blueprint to the target machine\n2. Build: `go build -o agent ./cmd/agent`\n3. Run:\n   ```\n   ./agent -token <YOUR_TOKEN> -apikey <YOUR_API_KEY> -appid <YOUR_APP_ID>\n   ```\n\n### TUI Client (run locally)\n1. Build: `go build -o client ./cmd/client`\n2. Run:\n   ```\n   ./client -token <YOUR_TOKEN> -device <DEVICE_ID>\n   ```\n3. Use `!help` for available commands, arrow keys for history, Tab for auto-complete\n\n## Architecture\n- **Agent** (`cmd/agent/`): subscribes to `commands`, executes locally, streams output back\n- **TUI Client** (`cmd/client/`): Bubbletea-based terminal UI with viewport scrolling, command history, and tab completion\n- Each device gets its own room (room slug = device ID)\n- Agent auto-creates its room via the NoLag REST API on startup\n- Device discovery via `status` topic heartbeats\n\n## NoLag Features Used\n- **Pub/Sub messaging** for command/response exchange\n- **Room-per-device** with dynamic room creation via REST API\n- **Reconnection** for resilient long-running agent connections\n- **Binary-safe messaging** via base64 encoding for PTY data\n- **Go SDK** (`github.com/NoLagApp/nolag-go`) for both agent and client"
+}

@@ -1,0 +1,34 @@
+{
+  "blueprintId": "chat-app-vue",
+  "name": "Chat App (Vue)",
+  "description": "Real-time chat app using NoLag presence and messaging with DaisyUI styling",
+  "version": "1.0.0",
+  "category": "communication",
+  "framework": "vue",
+  "dependencies": {
+    "@nolag/js-sdk": "1.0.0"
+  },
+  "config": {
+    "topics": [
+      {
+        "name": "messages",
+        "description": "Chat messages between users",
+        "messageRetention": "7d"
+      },
+      {
+        "name": "typing",
+        "description": "Typing indicator events",
+        "messageRetention": "0"
+      },
+      {
+        "name": "read-receipts",
+        "description": "Message read receipts",
+        "messageRetention": "0"
+      }
+    ],
+    "settings": {
+      "rateLimit": "100/min",
+      "maxPayloadSize": 4096
+    }
+  }
+}
