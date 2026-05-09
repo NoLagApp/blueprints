@@ -56,11 +56,11 @@ function computeOps(oldText, newText) {
   const ops = [];
 
   if (deletedLen > 0 && insertedText.length > 0) {
-    ops.push({ type: 'replace', position: prefix, length: deletedLen, text: insertedText });
+    ops.push({ type: 'replace', position: prefix, length: deletedLen, content: insertedText });
   } else if (deletedLen > 0) {
     ops.push({ type: 'delete', position: prefix, length: deletedLen });
   } else if (insertedText.length > 0) {
-    ops.push({ type: 'insert', position: prefix, text: insertedText });
+    ops.push({ type: 'insert', position: prefix, content: insertedText });
   }
 
   return ops;
@@ -79,10 +79,10 @@ function applyRemoteOp(op) {
   let newSelEnd = selEnd;
 
   if (op.type === 'insert') {
-    text = text.slice(0, op.position) + op.text + text.slice(op.position);
+    text = text.slice(0, op.position) + op.content + text.slice(op.position);
     if (op.position <= cursor) {
-      newStart += op.text.length;
-      newSelEnd += op.text.length;
+      newStart += op.content.length;
+      newSelEnd += op.content.length;
     }
   } else if (op.type === 'delete') {
     text = text.slice(0, op.position) + text.slice(op.position + op.length);
@@ -92,9 +92,9 @@ function applyRemoteOp(op) {
       newSelEnd -= shift;
     }
   } else if (op.type === 'replace') {
-    text = text.slice(0, op.position) + op.text + text.slice(op.position + op.length);
+    text = text.slice(0, op.position) + op.content + text.slice(op.position + op.length);
     if (op.position < cursor) {
-      const shift = op.text.length - op.length;
+      const shift = op.content.length - op.length;
       newStart += shift;
       newSelEnd += shift;
     }
@@ -118,7 +118,7 @@ function sendCursorUpdate() {
   const editor = document.getElementById('editor');
   if (!editor || !activeDoc) return;
   const { line, column } = getCursorLineCol(editor);
-  activeDoc.updateCursor({ line, column }).catch(() => {});
+  activeDoc.updateCursor({ line, column });
 }
 
 // ── Editor event handlers ────────────────────────────────────────────────────
@@ -130,9 +130,7 @@ function onEditorInput() {
 
   for (const op of ops) {
     if (activeDoc) {
-      activeDoc.sendOperation(op.type, op).catch(err => {
-        addLog(`sendOperation error: ${err.message}`, 'error');
-      });
+      activeDoc.sendOperation(op.type, op);
     }
   }
 
@@ -148,10 +146,10 @@ function onCursorMove() {
 // ── Idle detection ───────────────────────────────────────────────────────────
 function resetIdleTimer() {
   if (!activeDoc) return;
-  activeDoc.setStatus('active').catch(() => {});
+  activeDoc.setStatus('active');
   clearTimeout(idleTimer);
   idleTimer = setTimeout(() => {
-    if (activeDoc) activeDoc.setStatus('idle').catch(() => {});
+    if (activeDoc) activeDoc.setStatus('idle');
   }, 10000);
 }
 
@@ -201,6 +199,7 @@ async function handleConnect() {
     color,
     appName,
     debug: false,
+    url: 'wss://broker.dev.nolag.app/ws',
     documents: ['my-doc'],
   });
 
@@ -269,7 +268,7 @@ async function joinDocument(name) {
 
     doc.on('operation', op => {
       applyRemoteOp(op);
-      const preview = op.text ? `"${op.text.slice(0, 30)}${op.text.length > 30 ? '…' : ''}"` : '';
+      const preview = op.content ? `"${op.content.slice(0, 30)}${op.content.length > 30 ? '…' : ''}"` : '';
       addLog(`${op.username ?? 'peer'}: ${op.type} @${op.position ?? 0} ${preview}`, 'event');
     });
 
@@ -340,7 +339,7 @@ function render() {
     <div class="flex flex-wrap items-end gap-3 px-5 py-3 bg-base-200/50 border-b border-base-300 shrink-0">
       <div class="form-control">
         <label class="label py-0"><span class="label-text text-xs">Token</span></label>
-        <input id="inp-token" type="password" placeholder="NoLag token" class="input input-sm input-bordered w-52" />
+        <input id="inp-token" type="text" placeholder="NoLag token" class="input input-sm input-bordered w-52" />
       </div>
       <div class="form-control">
         <label class="label py-0"><span class="label-text text-xs">Username</span></label>
@@ -351,7 +350,7 @@ function render() {
         <input id="inp-color" type="color" value="#FF8A00" class="input input-sm input-bordered w-12 p-0.5 cursor-pointer" />
       </div>
       <div class="form-control">
-        <label class="label py-0"><span class="label-text text-xs">App Name</span></label>
+        <label class="label py-0"><span class="label-text text-xs">App Slug</span></label>
         <input id="inp-appname" type="text" placeholder="collab-demo" class="input input-sm input-bordered w-32" />
       </div>
       <button id="btn-connect" class="btn btn-sm btn-primary">Connect</button>

@@ -31,6 +31,7 @@ export class DeviceGroup extends EventEmitter<DeviceGroupEvents> {
   private _presenceManager: PresenceManager;
   private _telemetryStore: TelemetryStore;
   private _commandManager: CommandManager;
+  private _receivedCommands = new Map<string, DeviceCommand>();
   private _log: (...args: unknown[]) => void;
 
   /** @internal */
@@ -122,7 +123,7 @@ export class DeviceGroup extends EventEmitter<DeviceGroupEvents> {
     const pending = this._commandManager.getPending();
     const cmd = pending[pending.length - 1];
     if (cmd) {
-      this._roomContext.emit(TOPIC_COMMANDS, cmd, { echo: false });
+      this._roomContext.emit(TOPIC_COMMANDS, cmd, { echo: false, filter: targetDeviceId } as any);
     }
 
     return promise;
@@ -147,7 +148,11 @@ export class DeviceGroup extends EventEmitter<DeviceGroupEvents> {
       ackedAt: Date.now(),
     };
 
-    this._roomContext.emit(TOPIC_CMD_ACK, ack, { echo: false });
+    // Route ack back to the controller that sent the command
+    const cmd = this._receivedCommands.get(commandId) || this._commandManager.get(commandId);
+    const ackFilter = cmd?.sentBy;
+    this._receivedCommands.delete(commandId);
+    this._roomContext.emit(TOPIC_CMD_ACK, ack, { echo: false, ...(ackFilter ? { filter: ackFilter } : {}) } as any);
 
     // Also settle locally if this device is the one that sent the command
     this._commandManager.ack(commandId, status, result);
@@ -176,8 +181,23 @@ export class DeviceGroup extends EventEmitter<DeviceGroupEvents> {
     this._log('Group subscribe:', this.name);
 
     this._roomContext.subscribe(TOPIC_TELEMETRY);
-    this._roomContext.subscribe(TOPIC_COMMANDS);
-    this._roomContext.subscribe(TOPIC_CMD_ACK);
+
+    // Commands: devices subscribe with their deviceId as filter so they only
+    // receive commands targeted at them. Controllers subscribe as wildcard
+    // to observe all commands.
+    if (this._options.role === 'device') {
+      this._roomContext.subscribe(TOPIC_COMMANDS, { filters: [this._localDevice.deviceId] } as any);
+    } else {
+      this._roomContext.subscribe(TOPIC_COMMANDS);
+    }
+
+    // Acks: controllers subscribe with their deviceId as filter so they only
+    // receive acks for commands they sent. Devices subscribe as wildcard.
+    if (this._options.role === 'controller') {
+      this._roomContext.subscribe(TOPIC_CMD_ACK, { filters: [this._localDevice.deviceId] } as any);
+    } else {
+      this._roomContext.subscribe(TOPIC_CMD_ACK);
+    }
 
     this._roomContext.on(TOPIC_TELEMETRY, (data: unknown) => {
       this._handleIncomingTelemetry(data);
@@ -257,6 +277,7 @@ export class DeviceGroup extends EventEmitter<DeviceGroupEvents> {
     this._roomContext.off(TOPIC_CMD_ACK);
 
     this._commandManager.dispose();
+    this._receivedCommands.clear();
     this._presenceManager.clear();
     this.removeAllListeners();
   }
@@ -276,11 +297,11 @@ export class DeviceGroup extends EventEmitter<DeviceGroupEvents> {
   private _handleIncomingCommand(data: unknown): void {
     const cmd = data as DeviceCommand;
 
-    // Only devices process incoming commands targeted at them
+    // Controllers observe all commands but don't process them as targets
     if (this._options.role === 'controller') return;
-    if (cmd.targetDeviceId !== this._localDevice.deviceId) return;
 
     this._log('Received command:', cmd.command, 'from', cmd.sentBy);
+    this._receivedCommands.set(cmd.id, cmd);
     this.emit('command', cmd);
   }
 

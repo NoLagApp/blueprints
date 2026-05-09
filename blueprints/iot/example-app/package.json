@@ -9,8 +9,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@nolag/iot": "file:../../js/iot",
-    "@nolag/js-sdk": "^1.1.0"
+    "@nolag/iot": "file:../../../js/iot",
+    "@nolag/js-sdk": "^1.2.0"
   },
   "devDependencies": {
     "vite": "^6.0.7"

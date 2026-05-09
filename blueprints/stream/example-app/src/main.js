@@ -143,7 +143,7 @@ async function handleConnect() {
   currentRole = role;
   addLog(`Connecting as ${role} "${username}"...`, 'action');
 
-  sdk = new NoLagStream(token, { username, role, appName, debug: false });
+  sdk = new NoLagStream(token, { username, role, appName, debug: false, url: 'wss://broker.dev.nolag.app/ws' });
 
   sdk.on('connected', async () => {
     addLog('Connected', 'event');
@@ -299,7 +299,7 @@ function render() {
           <p class="text-sm text-base-content/50">Real-time engagement: comments, reactions, polls, and viewer tracking.</p>
           <div class="form-control">
             <label class="label py-0.5"><span class="label-text text-xs">Token</span></label>
-            <input id="inp-token" type="password" placeholder="NoLag token" class="input input-bordered w-full" />
+            <input id="inp-token" type="text" placeholder="NoLag token" class="input input-bordered w-full" />
           </div>
           <div class="grid grid-cols-2 gap-3">
             <div class="form-control">
@@ -321,7 +321,7 @@ function render() {
               <input id="inp-stream" type="text" placeholder="live-stream" value="live-stream" class="input input-bordered w-full" />
             </div>
             <div class="form-control">
-              <label class="label py-0.5"><span class="label-text text-xs">App Name</span></label>
+              <label class="label py-0.5"><span class="label-text text-xs">App Slug</span></label>
               <input id="inp-appname" type="text" placeholder="stream-demo" class="input input-bordered w-full" />
             </div>
           </div>

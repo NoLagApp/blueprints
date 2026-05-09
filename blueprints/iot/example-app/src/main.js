@@ -5,6 +5,7 @@ let iot = null;
 let activeGroup = null;
 let autoSendInterval = null;
 let pendingCommands = []; // commands received when role === 'device'
+let sentCommands = [];    // commands sent when role === 'controller' (track status)
 let telemetryRows = [];   // readings received when role === 'controller'
 
 const SENSORS = [
@@ -95,13 +96,46 @@ function renderPendingCommands() {
         <span class="text-xs opacity-50">${ts()}</span>
       </div>
       ${cmd.params && Object.keys(cmd.params).length ? `<pre class="text-xs opacity-70 bg-base-200 rounded p-1 overflow-x-auto">${JSON.stringify(cmd.params, null, 2)}</pre>` : ''}
-      <p class="text-xs opacity-60">From: ${cmd.fromDeviceId}</p>
+      <p class="text-xs opacity-60">From: ${cmd.sentBy}</p>
       <div class="flex gap-2 pt-1">
         <button onclick="handleAck(${i}, 'acked')" class="btn btn-xs btn-secondary">Ack</button>
         <button onclick="handleAck(${i}, 'completed')" class="btn btn-xs btn-success">Complete</button>
         <button onclick="handleAck(${i}, 'failed')" class="btn btn-xs btn-error">Fail</button>
       </div>
     </div>`).join('');
+}
+
+function renderSentCommands() {
+  const container = document.getElementById('sent-commands');
+  if (!container) return;
+  if (sentCommands.length === 0) {
+    container.innerHTML = '<p class="text-xs opacity-50 text-center py-4">No commands sent yet</p>';
+    return;
+  }
+  container.innerHTML = sentCommands.slice().reverse().map(cmd => {
+    const statusBadge = {
+      pending: 'badge-warning',
+      acked: 'badge-info',
+      completed: 'badge-success',
+      failed: 'badge-error',
+      timeout: 'badge-error',
+    }[cmd.status] || 'badge-ghost';
+    const target = cmd.targetDeviceId?.slice(0, 12) || '?';
+    const time = new Date(cmd.sentAt).toLocaleTimeString();
+    return `
+      <div class="flex items-center gap-3 px-3 py-2 rounded bg-base-300 text-sm fade-in">
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-2">
+            <span class="font-semibold text-primary">${cmd.command}</span>
+            <span class="badge ${statusBadge} badge-xs">${cmd.status}</span>
+          </div>
+          <div class="text-xs opacity-50 mt-0.5">→ ${target}… · ${time}</div>
+          ${cmd.params && Object.keys(cmd.params).length ? `<div class="text-xs opacity-40 font-mono mt-0.5">${JSON.stringify(cmd.params)}</div>` : ''}
+          ${cmd.result !== undefined ? `<div class="text-xs text-success mt-0.5">Result: ${JSON.stringify(cmd.result)}</div>` : ''}
+          ${cmd.error ? `<div class="text-xs text-error mt-0.5">Error: ${cmd.error}</div>` : ''}
+        </div>
+      </div>`;
+  }).join('');
 }
 
 function renderTelemetryTable() {
@@ -170,6 +204,7 @@ async function connect() {
     role,
     appName,
     debug: false,
+    url: 'wss://broker.dev.nolag.app/ws',
     groups: ['factory-floor'],
   });
 
@@ -239,13 +274,23 @@ async function joinGroup(name) {
     });
 
     group.on('command', command => {
-      addLog(`Command received: "${command.command}" (id:${command.id.slice(0,8)}) from ${command.fromDeviceId.slice(0,8)}`, 'event');
+      addLog(`Command received: "${command.command}" (id:${(command.id || '').slice(0,8)}) from ${(command.sentBy || '').slice(0,8)}`, 'event');
       pendingCommands.push(command);
       renderPendingCommands();
     });
 
     group.on('commandAck', ack => {
-      addLog(`Command ack: id=${ack.id.slice(0,8)} status=${ack.status}`, 'event');
+      addLog(`Command ack: id=${(ack.id || '').slice(0,8)} status=${ack.status}`, 'event');
+      // Update sent command status
+      const sent = sentCommands.find(c => c.id === ack.id);
+      if (sent) {
+        sent.status = ack.status;
+        if (ack.result !== undefined) sent.result = ack.result;
+        if (ack.error) sent.error = ack.error;
+        if (ack.completedAt) sent.completedAt = ack.completedAt;
+        if (ack.ackedAt) sent.ackedAt = ack.ackedAt;
+        renderSentCommands();
+      }
     });
 
     group.on('deviceJoined', device => {
@@ -311,9 +356,8 @@ function toggleAutoSend() {
       const sensor = SENSORS[Math.floor(Math.random() * SENSORS.length)];
       const base   = parseFloat(sensor.defaultVal);
       const value  = +(base + (Math.random() - 0.5) * base * 0.05).toFixed(2);
-      activeGroup.sendTelemetry(sensor.id, value, { unit: sensor.unit })
-        .then(() => addLog(`Auto-sent [${sensor.id}] ${value}${sensor.unit}`, 'action'))
-        .catch(err => addLog(`Auto-send error: ${err.message}`, 'error'));
+      activeGroup.sendTelemetry(sensor.id, value, { unit: sensor.unit });
+      addLog(`Auto-sent [${sensor.id}] ${value}${sensor.unit}`, 'action');
     }, 2000);
   }
 }
@@ -339,10 +383,35 @@ async function sendCommand() {
     catch { addLog('Invalid JSON in params', 'error'); return; }
   }
   try {
+    // Track the command as pending immediately
+    const cmdEntry = {
+      id: null, // will be set once the promise resolves or from the manager
+      targetDeviceId,
+      command,
+      params,
+      status: 'pending',
+      sentBy: iot.localDevice?.deviceId,
+      sentAt: Date.now(),
+    };
+    sentCommands.push(cmdEntry);
+    renderSentCommands();
+    addLog(`Command "${command}" sent → ${targetDeviceId.slice(0,8)}`, 'action');
+
     const ack = await activeGroup.sendCommand(targetDeviceId, command, params);
-    addLog(`Command "${command}" sent → ${targetDeviceId.slice(0,8)} (ack: ${JSON.stringify(ack)})`, 'action');
+    // Update with real id and status from ack
+    cmdEntry.id = ack.id;
+    cmdEntry.status = ack.status;
+    if (ack.result !== undefined) cmdEntry.result = ack.result;
+    renderSentCommands();
   } catch (err) {
     addLog(`sendCommand error: ${err.message}`, 'error');
+    // Mark last sent command as failed
+    const last = sentCommands[sentCommands.length - 1];
+    if (last && last.command === command) {
+      last.status = 'failed';
+      last.error = err.message;
+      renderSentCommands();
+    }
   }
 }
 
@@ -382,7 +451,7 @@ function render() {
     <div id="connect-panel" class="flex flex-wrap items-end gap-3 px-4 py-3 bg-base-200 border-b border-base-300 shrink-0">
       <div class="form-control">
         <label class="label py-0"><span class="label-text text-xs">Token</span></label>
-        <input id="token-input" type="password" placeholder="NoLag token" class="input input-sm input-bordered w-56" />
+        <input id="token-input" type="text" placeholder="NoLag token" class="input input-sm input-bordered w-56" />
       </div>
       <div class="form-control">
         <label class="label py-0"><span class="label-text text-xs">Device Name</span></label>
@@ -396,7 +465,7 @@ function render() {
         </select>
       </div>
       <div class="form-control">
-        <label class="label py-0"><span class="label-text text-xs">App Name</span></label>
+        <label class="label py-0"><span class="label-text text-xs">App Slug</span></label>
         <input id="app-name-input" type="text" placeholder="iot-demo" class="input input-sm input-bordered w-32" />
       </div>
       <button onclick="window._iotConnect()" class="btn btn-sm btn-primary">Connect</button>
@@ -504,6 +573,16 @@ function render() {
                 <input id="cmd-params" type="text" placeholder='{"value":80}' class="input input-sm input-bordered w-40" />
               </div>
               <button onclick="window._sendCommand()" class="btn btn-sm btn-primary">Send</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Sent Commands (with live status updates) -->
+        <div class="card bg-base-200 shadow flex-1">
+          <div class="card-body p-4">
+            <h2 class="card-title text-sm">Sent Commands</h2>
+            <div id="sent-commands" class="space-y-2 overflow-y-auto max-h-96">
+              <p class="text-xs opacity-50 text-center py-4">No commands sent yet</p>
             </div>
           </div>
         </div>

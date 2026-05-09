@@ -24,6 +24,9 @@ function createMockRoomContext(): RoomContext & {
       return ctx;
     }),
     setPresence: vi.fn(),
+    setFilters: vi.fn(),
+    addFilters: vi.fn(),
+    removeFilters: vi.fn(),
     getPresence: vi.fn(() => ({})),
     fetchPresence: vi.fn(() => Promise.resolve([])),
     _fireMessage(topic: string, data: unknown) {
@@ -101,7 +104,7 @@ describe('TrackingZone', () => {
           point,
           isReplay: false,
         }),
-        { echo: true },
+        expect.objectContaining({ echo: false, filter: expect.any(String) }),
       );
     });
 

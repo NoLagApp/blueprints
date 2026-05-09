@@ -216,6 +216,7 @@ window._connect = async function () {
     notify = new NoLagNotify(token, {
       appName,
       debug: true,
+      url: 'wss://broker.dev.nolag.app/ws',
       channels: CHANNEL_NAMES
     });
     wireMainEvents(notify);
@@ -366,7 +367,7 @@ function renderApp() {
       <!-- Connect panel -->
       <div class="flex items-center gap-3 px-6 py-3 border-b border-base-300 bg-base-200/50">
         <input id="input-token" type="text" placeholder="Token" class="input input-sm input-bordered w-52 font-mono" />
-        <input id="input-appname" type="text" placeholder="App name" value="notify-demo" class="input input-sm input-bordered w-36" />
+        <input id="input-appname" type="text" placeholder="App slug" value="notify-demo" class="input input-sm input-bordered w-36" />
         <button id="btn-connect" class="btn btn-sm btn-primary" onclick="window._connect()">Connect</button>
         <button id="btn-disconnect" class="btn btn-sm btn-ghost" onclick="window._disconnect()" disabled>Disconnect</button>
       </div>

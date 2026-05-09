@@ -210,7 +210,8 @@ describe('NoLagIoT', () => {
       iot.joinGroup('factory-floor');
 
       expect(mockRoomContext.subscribe).toHaveBeenCalledWith('telemetry');
-      expect(mockRoomContext.subscribe).toHaveBeenCalledWith('commands');
+      // Device subscribes to commands with its deviceId as filter
+      expect(mockRoomContext.subscribe).toHaveBeenCalledWith('commands', { filters: [iot.localDevice!.deviceId] });
       expect(mockRoomContext.subscribe).toHaveBeenCalledWith('_cmd_ack');
     });
   });

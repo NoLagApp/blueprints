@@ -3,6 +3,7 @@ import { EventEmitter } from './EventEmitter';
 import { PresenceManager } from './PresenceManager';
 import { LocationStore } from './LocationStore';
 import { GeofenceManager } from './GeofenceManager';
+import { pointToCell, geofenceToCells } from './GeoGrid';
 import { generateId } from './utils';
 import { TOPIC_LOCATIONS, TOPIC_GEOFENCE } from './constants';
 import type {
@@ -31,6 +32,7 @@ export class TrackingZone extends EventEmitter<TrackZoneEvents> {
   private _presenceManager: PresenceManager;
   private _locationStore: LocationStore;
   private _geofenceManager: GeofenceManager;
+  private _locationCells = new Set<string>();
   private _log: (...args: unknown[]) => void;
 
   /** @internal */
@@ -81,13 +83,15 @@ export class TrackingZone extends EventEmitter<TrackZoneEvents> {
       isReplay: false,
     };
 
-    this._log('Sending location:', update.assetId, point.lat, point.lng);
-    this._roomContext.emit(TOPIC_LOCATIONS, update, { echo: true });
+    const cellKey = pointToCell(point);
+    this._log('Sending location:', update.assetId, point.lat, point.lng, 'cell:', cellKey);
+    this._roomContext.emit(TOPIC_LOCATIONS, update, { echo: false, filter: cellKey } as any);
 
-    // Store locally
+    // Store locally and emit event (no echo needed — we handle our own updates)
     this._locationStore.add(update);
+    this.emit('locationUpdate', update);
 
-    // Check client-side geofences
+    // Check client-side geofences for our own location
     this._checkGeofences(update.assetId, point, update.timestamp);
 
     return update;
@@ -103,17 +107,23 @@ export class TrackingZone extends EventEmitter<TrackZoneEvents> {
   // ============ Geofencing ============
 
   /**
-   * Add a client-side geofence to this zone.
+   * Add a geofence to this zone.
+   * Automatically subscribes to the NoLag location filters for the
+   * grid cells that overlap this geofence — so only location updates
+   * from the relevant geographic area are delivered.
    */
   addGeofence(geofence: Geofence): void {
     this._geofenceManager.addGeofence(geofence);
+    this._updateLocationFilters();
   }
 
   /**
-   * Remove a client-side geofence by ID.
+   * Remove a geofence by ID.
+   * Recalculates location filters for remaining geofences.
    */
   removeGeofence(id: string): void {
     this._geofenceManager.removeGeofence(id);
+    this._updateLocationFilters();
   }
 
   /**
@@ -145,7 +155,21 @@ export class TrackingZone extends EventEmitter<TrackZoneEvents> {
   _subscribe(): void {
     this._log('Zone subscribe:', this.name);
 
-    this._roomContext.subscribe(TOPIC_LOCATIONS);
+    // If geofences are pre-configured, subscribe with cell filters
+    // so we only receive location updates from relevant areas.
+    // Without geofences, subscribe as wildcard to receive all locations.
+    const geofences = this._geofenceManager.getGeofences();
+    if (geofences.length > 0) {
+      const cells = new Set<string>();
+      for (const gf of geofences) {
+        for (const cell of geofenceToCells(gf)) cells.add(cell);
+      }
+      this._locationCells = cells;
+      this._log('Subscribing to locations with', cells.size, 'cell filters');
+      this._roomContext.subscribe(TOPIC_LOCATIONS, { filters: [...cells] } as any);
+    } else {
+      this._roomContext.subscribe(TOPIC_LOCATIONS);
+    }
     this._roomContext.subscribe(TOPIC_GEOFENCE);
 
     this._roomContext.on(TOPIC_LOCATIONS, (data: unknown) => {
@@ -238,9 +262,43 @@ export class TrackingZone extends EventEmitter<TrackZoneEvents> {
 
   // ============ Private ============
 
+  /**
+   * Recalculate location cell filters based on current geofences.
+   * Calls setFilters on the locations topic to update server-side filtering.
+   */
+  private _updateLocationFilters(): void {
+    const geofences = this._geofenceManager.getGeofences();
+    if (geofences.length === 0) {
+      // No geofences — switch to wildcard (receive all locations)
+      if (this._locationCells.size > 0) {
+        this._locationCells.clear();
+        this._roomContext.setFilters(TOPIC_LOCATIONS, []);
+        this._log('Location filters cleared — receiving all locations');
+      }
+      return;
+    }
+
+    const newCells = new Set<string>();
+    for (const gf of geofences) {
+      for (const cell of geofenceToCells(gf)) newCells.add(cell);
+    }
+
+    // Only update if cells changed
+    const oldArr = [...this._locationCells].sort();
+    const newArr = [...newCells].sort();
+    if (oldArr.join(',') !== newArr.join(',')) {
+      this._locationCells = newCells;
+      this._roomContext.setFilters(TOPIC_LOCATIONS, newArr);
+      this._log('Location filters updated:', newArr.length, 'cells');
+    }
+  }
+
   private _handleIncomingLocation(data: unknown): void {
     const update = data as LocationUpdate;
     if (!update?.assetId || !update?.point) return;
+
+    // Skip our own updates — already handled locally in sendLocation
+    if (update.assetId === this._localAsset.assetId) return;
 
     this._log('Received location:', update.assetId, update.point.lat, update.point.lng);
 

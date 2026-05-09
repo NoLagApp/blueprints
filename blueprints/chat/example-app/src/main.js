@@ -130,8 +130,8 @@ function renderConnectPanel() {
           </div>
 
           <div class="form-control">
-            <label class="label"><span class="label-text">App Name</span></label>
-            <input id="appname-input" type="text" placeholder="NoLag app name"
+            <label class="label"><span class="label-text">App Slug</span></label>
+            <input id="appname-input" type="text" placeholder="NoLag app slug"
                    class="input input-bordered input-sm" value="chat-app" />
           </div>
 

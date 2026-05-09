@@ -65,10 +65,10 @@ export class NoLagDash extends EventEmitter<DashClientEvents> {
     this._onlineViewers.clear(); this._actorToViewerId.clear();
   }
 
-  joinPanel(name: string): DashboardPanel {
+  joinPanel(name: string, opts?: { metricFilters?: string[] }): DashboardPanel {
     if (!this._client) throw new Error('Not connected — call connect() first');
     let panel = this._panels.get(name);
-    if (!panel) panel = this._subscribePanel(name);
+    if (!panel) panel = this._subscribePanel(name, opts?.metricFilters);
     panel._activate();
     return panel;
   }
@@ -80,12 +80,12 @@ export class NoLagDash extends EventEmitter<DashClientEvents> {
     this._panels.delete(name);
   }
 
-  private _subscribePanel(name: string): DashboardPanel {
+  private _subscribePanel(name: string, metricFilters?: string[]): DashboardPanel {
     if (!this._client) throw new Error('Not connected');
     const roomContext = this._client.setApp(this._options.appName).setRoom(name);
     const panel = new DashboardPanel(name, roomContext, this._viewerId, this._client.actorId!, this._options, createLogger(`DashPanel:${name}`, this._options.debug));
     this._panels.set(name, panel);
-    panel._subscribe();
+    panel._subscribe(metricFilters);
     return panel;
   }
 

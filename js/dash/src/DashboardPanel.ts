@@ -29,11 +29,28 @@ export class DashboardPanel extends EventEmitter<DashPanelEvents> {
     this._widgetManager = new WidgetManager();
   }
 
-  publishMetric(streamId: string, value: number, opts?: { unit?: string; tags?: Record<string, string> }): MetricPoint {
+  publishMetric(streamId: string, value: number, opts?: { unit?: string; tags?: Record<string, string>; filter?: string }): MetricPoint {
     const point: MetricPoint = { id: generateId(), streamId, value, unit: opts?.unit, tags: opts?.tags, timestamp: Date.now(), isReplay: false };
     this._metricStore.add(point);
-    this._roomContext.emit(TOPIC_METRICS, { id: point.id, streamId, value, unit: point.unit, tags: point.tags, timestamp: point.timestamp }, { echo: false });
+    const emitOpts: Record<string, unknown> = { echo: false };
+    if (opts?.filter) emitOpts.filter = opts.filter;
+    this._roomContext.emit(TOPIC_METRICS, { id: point.id, streamId, value, unit: point.unit, tags: point.tags, timestamp: point.timestamp }, emitOpts as any);
     return point;
+  }
+
+  /** Replace all metric filters — only receive metrics published with these filter values */
+  setMetricFilters(filters: string[]): void {
+    this._roomContext.setFilters(TOPIC_METRICS, filters);
+  }
+
+  /** Add filter values to the existing metric filter set */
+  addMetricFilters(filters: string[]): void {
+    this._roomContext.addFilters(TOPIC_METRICS, filters);
+  }
+
+  /** Remove specific filter values from the metric filter set */
+  removeMetricFilters(filters: string[]): void {
+    this._roomContext.removeFilters(TOPIC_METRICS, filters);
   }
 
   publishWidget(widgetId: string, type: WidgetType, data: Record<string, unknown>, label?: string): WidgetUpdate {
@@ -49,8 +66,15 @@ export class DashboardPanel extends EventEmitter<DashPanelEvents> {
   getWidgets(): WidgetUpdate[] { return this._widgetManager.getAll(); }
   getViewers(): DashboardViewer[] { return this._presenceManager.getAll(); }
 
-  _subscribe(): void {
-    this._roomContext.subscribe(TOPIC_METRICS);
+  _subscribe(metricFilters?: string[]): void {
+    if (metricFilters !== undefined) {
+      // Subscribe with filters. If empty array, use a no-match placeholder
+      // to avoid wildcard subscription (which receives everything).
+      const filters = metricFilters.length > 0 ? metricFilters : ['__none__'];
+      this._roomContext.subscribe(TOPIC_METRICS, { filters } as any);
+    } else {
+      this._roomContext.subscribe(TOPIC_METRICS);
+    }
     this._roomContext.subscribe(TOPIC_WIDGETS);
     this._roomContext.on(TOPIC_METRICS, (data: unknown, meta: MessageMeta) => {
       const raw = data as Record<string, unknown>;

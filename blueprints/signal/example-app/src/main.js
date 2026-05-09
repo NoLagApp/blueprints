@@ -69,6 +69,21 @@ function createPeerConnection(peerId) {
 async function handleOffer(fromPeerId, offer) {
   addLog(`Received offer from ${shortId(fromPeerId)}`, 'event');
   let entry = peerConnections.get(fromPeerId);
+
+  if (entry && entry.pc.signalingState === 'have-local-offer') {
+    // Glare: we both sent offers. Use peer ID comparison to decide who wins.
+    // The peer with the "lower" ID accepts the other's offer (rolls back their own).
+    const localId = signal.localPeer?.peerId || '';
+    if (localId > fromPeerId) {
+      // We win — ignore their offer, they should accept ours
+      addLog(`Glare: ignoring offer from ${shortId(fromPeerId)} (we take priority)`, 'action');
+      return;
+    }
+    // They win — rollback our offer and accept theirs
+    addLog(`Glare: rolling back our offer, accepting ${shortId(fromPeerId)}'s`, 'action');
+    await entry.pc.setLocalDescription({ type: 'rollback' });
+  }
+
   if (!entry) {
     const pc = createPeerConnection(fromPeerId);
     entry = { pc, stream: null };
@@ -80,14 +95,19 @@ async function handleOffer(fromPeerId, offer) {
   await entry.pc.setLocalDescription(answer);
   room.sendAnswer(fromPeerId, answer);
   addLog(`Sent answer to ${shortId(fromPeerId)}`, 'action');
+  updatePeerCount();
+  renderVideoGrid();
 }
 
 async function handleAnswer(fromPeerId, answer) {
   addLog(`Received answer from ${shortId(fromPeerId)}`, 'event');
   const entry = peerConnections.get(fromPeerId);
-  if (entry) {
-    await entry.pc.setRemoteDescription(new RTCSessionDescription(answer));
+  if (!entry) return;
+  if (entry.pc.signalingState !== 'have-local-offer') {
+    addLog(`Ignoring answer — not expecting one (state: ${entry.pc.signalingState})`, 'action');
+    return;
   }
+  await entry.pc.setRemoteDescription(new RTCSessionDescription(answer));
 }
 
 async function handleIceCandidate(fromPeerId, candidate) {
@@ -107,6 +127,11 @@ function handleBye(fromPeerId) {
 }
 
 async function callPeer(peerId) {
+  // Don't create a duplicate connection or offer if we already have one
+  // (the other peer may have sent us an offer first)
+  const existing = peerConnections.get(peerId);
+  if (existing) return;
+
   addLog(`Calling ${shortId(peerId)}...`, 'action');
   const pc = createPeerConnection(peerId);
   peerConnections.set(peerId, { pc, stream: null });
@@ -115,6 +140,7 @@ async function callPeer(peerId) {
   await pc.setLocalDescription(offer);
   room.sendOffer(peerId, offer);
   addLog(`Sent offer to ${shortId(peerId)}`, 'action');
+  updatePeerCount();
 }
 
 function removePeer(peerId) {
@@ -129,6 +155,10 @@ function removePeer(peerId) {
 
 // ── Media controls ───────────────────────────────────────────────────────────
 async function getMedia() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    addLog('Media devices API not available — not a secure context (use localhost or HTTPS)', 'error');
+    return false;
+  }
   try {
     localStream = await navigator.mediaDevices.getUserMedia({
       video: true,
@@ -166,14 +196,23 @@ async function joinCall() {
 
   if (!token) { addLog('Token is required', 'error'); return; }
 
+  const errEl = document.getElementById('join-error');
   const hasMedia = await getMedia();
-  if (!hasMedia) return;
+  if (!hasMedia) {
+    addLog('No camera/mic access — connecting without media (signaling only)', 'action');
+    if (errEl) { errEl.textContent = 'No camera/mic — connecting in signaling-only mode. Use localhost or HTTPS for video.'; errEl.classList.remove('hidden'); }
+  } else {
+    if (errEl) errEl.classList.add('hidden');
+  }
 
   addLog('Connecting to NoLag...', 'action');
 
+  const appName = document.getElementById('inp-appname').value.trim() || 'signal-demo';
+
   signal = new NoLagSignal(token, {
-    appName: 'signal-demo',
+    appName,
     debug: false,
+    url: 'wss://broker.dev.nolag.app/ws',
   });
 
   signal.on('connected', async () => {
@@ -203,12 +242,15 @@ async function joinCall() {
       }
     });
 
-    // When a new peer joins, initiate a call to them
+    // When a new peer joins, only the peer with the higher ID initiates
+    // This prevents both peers from sending offers simultaneously (glare)
     room.on('peerJoined', (peer) => {
       addLog(`${shortId(peer.peerId)} joined the room`, 'event');
       updatePeerCount();
-      // Only the peer that was here first initiates (avoids double offers)
-      callPeer(peer.peerId);
+      const localId = signal.localPeer?.peerId || '';
+      if (localId > peer.peerId) {
+        callPeer(peer.peerId);
+      }
     });
 
     room.on('peerLeft', (peer) => {
@@ -216,11 +258,14 @@ async function joinCall() {
       removePeer(peer.peerId);
     });
 
-    // Call any peers already in the room
+    // Call any peers already in the room (only if we have the higher ID)
     const existingPeers = room.getPeers();
+    const localId = signal.localPeer?.peerId || '';
     for (const peer of existingPeers) {
       addLog(`Found existing peer: ${shortId(peer.peerId)}`, 'event');
-      callPeer(peer.peerId);
+      if (localId > peer.peerId) {
+        callPeer(peer.peerId);
+      }
     }
 
     isInCall = true;
@@ -411,12 +456,18 @@ function render() {
 
           <div class="form-control">
             <label class="label py-0.5"><span class="label-text text-xs">Token</span></label>
-            <input id="inp-token" type="password" placeholder="Your NoLag token" class="input input-bordered w-full" />
+            <input id="inp-token" type="text" placeholder="Your NoLag token" class="input input-bordered w-full" />
+          </div>
+          <div class="form-control">
+            <label class="label py-0.5"><span class="label-text text-xs">App Slug</span></label>
+            <input id="inp-appname" type="text" placeholder="signal-demo" value="my-nolag-signal-sdk-demo" class="input input-bordered w-full" />
           </div>
           <div class="form-control">
             <label class="label py-0.5"><span class="label-text text-xs">Room Name</span></label>
             <input id="inp-room" type="text" placeholder="call-room" value="call-room" class="input input-bordered w-full" />
           </div>
+
+          <div id="join-error" class="text-error text-sm hidden"></div>
 
           <button id="btn-join" class="btn btn-primary mt-2 gap-2">
             ${ICONS.phone} Join Call

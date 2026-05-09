@@ -97,7 +97,7 @@ function renderShell() {
               <div class="grid grid-cols-4 gap-3">
                 <div class="form-control col-span-2">
                   <label class="label py-0.5"><span class="label-text text-xs">Token</span></label>
-                  <input id="inp-token" type="password" placeholder="Your NoLag token" class="input input-sm input-bordered w-full" />
+                  <input id="inp-token" type="text" placeholder="Your NoLag token" class="input input-sm input-bordered w-full" />
                 </div>
                 <div class="form-control">
                   <label class="label py-0.5"><span class="label-text text-xs">Role</span></label>
@@ -113,7 +113,7 @@ function renderShell() {
                 </div>
               </div>
               <div class="form-control mt-1 w-48">
-                <label class="label py-0.5"><span class="label-text text-xs">App Name</span></label>
+                <label class="label py-0.5"><span class="label-text text-xs">App Slug</span></label>
                 <input id="inp-appname" type="text" placeholder="nolag-queue-demo" class="input input-sm input-bordered w-full" />
               </div>
               <div class="flex gap-2 mt-1">
@@ -349,10 +349,13 @@ function renderJobActions() {
   document.getElementById('action-job-id').textContent = job.id;
   document.getElementById('action-job-detail').textContent =
     `type: ${job.type} | status: ${job.status} | priority: ${job.priority} | attempts: ${job.attempts ?? 0}`;
+  // Only update slider if user isn't actively dragging it
   const progressInput = document.getElementById('inp-progress');
-  if (progressInput) progressInput.value = job.progress || 0;
-  const progressVal = document.getElementById('progress-val');
-  if (progressVal) progressVal.textContent = `${job.progress || 0}%`;
+  if (progressInput && document.activeElement !== progressInput) {
+    progressInput.value = job.progress || 0;
+    const progressVal = document.getElementById('progress-val');
+    if (progressVal) progressVal.textContent = `${job.progress || 0}%`;
+  }
 }
 
 // ─── Render: log ─────────────────────────────────────────────────────────────
@@ -486,6 +489,7 @@ function bindStaticEvents() {
         concurrency,
         appName,
         debug: false,
+        url: 'wss://broker.dev.nolag.app/ws',
         queues: ['image-processing', 'email-dispatch'],
       });
       queue.on('connected', () => {
@@ -578,6 +582,11 @@ function bindStaticEvents() {
   document.getElementById('inp-progress').addEventListener('input', e => {
     const el = document.getElementById('progress-val');
     if (el) el.textContent = `${e.target.value}%`;
+    // Auto-report progress on slider change
+    if (activeRoom && selectedJobId) {
+      const pct = parseInt(e.target.value, 10);
+      activeRoom.reportProgress(selectedJobId, pct);
+    }
   });
 
   document.getElementById('btn-claim-job').addEventListener('click', async () => {

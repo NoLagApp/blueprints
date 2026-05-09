@@ -65,7 +65,10 @@ describe('QueueRoom', () => {
   describe('_subscribe', () => {
     it('should subscribe to the jobs topic', () => {
       room._subscribe();
-      expect(ctx.subscribe).toHaveBeenCalledWith('jobs');
+      expect(ctx.subscribe).toHaveBeenCalledWith('jobs', {
+        loadBalance: true,
+        loadBalanceGroup: 'queue-workers-image-processing',
+      });
     });
 
     it('should subscribe to the _progress topic', () => {

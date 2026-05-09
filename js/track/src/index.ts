@@ -6,6 +6,7 @@
 export { NoLagTrack } from './NoLagTrack';
 export { TrackingZone } from './TrackingZone';
 export { EventEmitter } from './EventEmitter';
+export { pointToCell, geofenceToCells } from './GeoGrid';
 
 export type {
   NoLagTrackOptions,

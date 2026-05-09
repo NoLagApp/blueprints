@@ -9,8 +9,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@nolag/queue": "file:../../js/queue",
-    "@nolag/js-sdk": "^1.1.0"
+    "@nolag/queue": "file:../../../js/queue",
+    "@nolag/js-sdk": "^1.2.0"
   },
   "devDependencies": {
     "vite": "^6.0.7"

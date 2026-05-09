@@ -24,14 +24,14 @@ function render() {
         <div class="flex flex-wrap gap-2 items-end">
           <div class="form-control">
             <label class="label py-0"><span class="label-text text-xs">Token</span></label>
-            <input id="inp-token" type="password" placeholder="NoLag token" class="input input-bordered input-sm w-52" />
+            <input id="inp-token" type="text" placeholder="NoLag token" class="input input-bordered input-sm w-52" />
           </div>
           <div class="form-control">
             <label class="label py-0"><span class="label-text text-xs">Username</span></label>
             <input id="inp-username" type="text" placeholder="username" class="input input-bordered input-sm w-36" />
           </div>
           <div class="form-control">
-            <label class="label py-0"><span class="label-text text-xs">App Name</span></label>
+            <label class="label py-0"><span class="label-text text-xs">App Slug</span></label>
             <input id="inp-appname" type="text" placeholder="my-feed-app" class="input input-bordered input-sm w-40" />
           </div>
           <button id="btn-connect" class="btn btn-primary btn-sm">Connect</button>
@@ -128,7 +128,7 @@ async function handleConnect() {
   const username = document.getElementById('inp-username').value.trim() || 'anonymous';
   const appName = document.getElementById('inp-appname').value.trim() || 'feed-demo';
 
-  sdk = new NoLagFeed(token, { username, appName, debug: true, channels: ['main-feed'] });
+  sdk = new NoLagFeed(token, { username, appName, debug: true, url: 'wss://broker.dev.nolag.app/ws', channels: ['main-feed'] });
 
   sdk.on('connected', async () => {
     log('connected', 'event');
@@ -137,6 +137,8 @@ async function handleConnect() {
     document.getElementById('btn-disconnect').classList.remove('hidden');
     renderChannelList();
     refreshOnlineUsers();
+    // Auto-join the first channel
+    await handleJoinChannel('main-feed');
   });
 
   sdk.on('disconnected', reason => {
@@ -204,8 +206,8 @@ function renderOnlineUsers(users) {
 function renderChannelList() {
   const el = document.getElementById('channel-list');
   if (!el || !sdk) return;
-  const channels = sdk.channels || [];
-  if (!channels.length) {
+  const channels = [...sdk.channels.values()];
+  if (channels.length === 0) {
     el.innerHTML = '<span class="text-xs text-base-content/30">None</span>';
     return;
   }
@@ -324,6 +326,17 @@ async function handleJoinChannel(name) {
   document.getElementById('new-post-form').classList.remove('hidden');
   document.getElementById('btn-mark-read').classList.remove('hidden');
   updateUnreadBadge(channel.unreadCount || 0);
+
+  // Auto-post a join announcement so the feed has content
+  const username = sdk?.localUser?.username || 'someone';
+  const greetings = [
+    `${username} just joined the feed! 👋`,
+    `Hey everyone, ${username} is here! 🎉`,
+    `${username} has entered the chat... I mean, feed! 😄`,
+    `Welcome ${username}! What's on your mind? 🤔`,
+  ];
+  const greeting = greetings[Math.floor(Math.random() * greetings.length)];
+  await channel.createPost({ content: greeting });
 }
 
 function updateChannelHeader(name) {

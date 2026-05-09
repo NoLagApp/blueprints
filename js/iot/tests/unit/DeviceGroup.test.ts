@@ -89,7 +89,8 @@ describe('DeviceGroup', () => {
     it('should subscribe to telemetry, commands, and _cmd_ack topics', () => {
       group._subscribe();
       expect(ctx.subscribe).toHaveBeenCalledWith('telemetry');
-      expect(ctx.subscribe).toHaveBeenCalledWith('commands');
+      // Device subscribes to commands with its deviceId as filter
+      expect(ctx.subscribe).toHaveBeenCalledWith('commands', { filters: ['local-device-id'] });
       expect(ctx.subscribe).toHaveBeenCalledWith('_cmd_ack');
     });
 
@@ -198,7 +199,7 @@ describe('DeviceGroup', () => {
           command: 'reboot',
           status: 'pending',
         }),
-        { echo: false },
+        { echo: false, filter: 'device-01' },
       );
     });
 
@@ -304,22 +305,8 @@ describe('DeviceGroup', () => {
       );
     });
 
-    it('should NOT emit "command" if targetDeviceId does not match local device', () => {
-      group._subscribe();
-      const handler = vi.fn();
-      group.on('command', handler);
-
-      ctx._fireMessage('commands', {
-        id: 'cmd-2',
-        targetDeviceId: 'other-device',
-        command: 'reboot',
-        status: 'pending',
-        sentBy: 'ctrl',
-        sentAt: Date.now(),
-      });
-
-      expect(handler).not.toHaveBeenCalled();
-    });
+    // Note: with NoLag filters, commands are routed server-side to the target
+    // device only, so a device never receives commands for other devices.
 
     it('should NOT emit "command" when role is controller', () => {
       const controllerGroup = new DeviceGroup(

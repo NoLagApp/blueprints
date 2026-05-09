@@ -175,6 +175,7 @@ async function handleConnect() {
     username,
     appName,
     debug: false,
+    url: 'wss://broker.dev.nolag.app/ws',
     collections: [COLLECTION_NAME],
   });
 
@@ -297,14 +298,14 @@ function render() {
     <div class="flex flex-wrap items-end gap-3 px-5 py-3 bg-base-200/50 border-b border-base-300 shrink-0">
       <div class="form-control">
         <label class="label py-0"><span class="label-text text-xs">Token</span></label>
-        <input id="inp-token" type="password" placeholder="NoLag token" class="input input-sm input-bordered w-52" />
+        <input id="inp-token" type="text" placeholder="NoLag token" class="input input-sm input-bordered w-52" />
       </div>
       <div class="form-control">
         <label class="label py-0"><span class="label-text text-xs">Username</span></label>
         <input id="inp-username" type="text" placeholder="alice" class="input input-sm input-bordered w-32" />
       </div>
       <div class="form-control">
-        <label class="label py-0"><span class="label-text text-xs">App Name</span></label>
+        <label class="label py-0"><span class="label-text text-xs">App Slug</span></label>
         <input id="inp-appname" type="text" placeholder="sync-demo" class="input input-sm input-bordered w-32" />
       </div>
       <button id="btn-connect" class="btn btn-sm btn-primary">Connect</button>

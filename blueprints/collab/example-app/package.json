@@ -9,8 +9,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@nolag/collab": "file:../../js/collab",
-    "@nolag/js-sdk": "^1.1.0"
+    "@nolag/collab": "file:../../../js/collab",
+    "@nolag/js-sdk": "^1.2.0"
   },
   "devDependencies": {
     "vite": "^6.0.7"

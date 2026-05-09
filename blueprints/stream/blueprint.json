@@ -47,6 +47,18 @@
     }
   },
   "config": {
+    "staticRooms": [
+      {
+        "slug": "live-stream",
+        "name": "Live Stream",
+        "description": "Default live stream room",
+        "topics": [
+          "comments",
+          "_reactions",
+          "polls"
+        ]
+      }
+    ],
     "staticLobbies": [
       {
         "slug": "online",

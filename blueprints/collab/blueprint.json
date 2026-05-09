@@ -24,7 +24,10 @@
   "topicConfigs": {
     "operations": {
       "logging": {
-        "enabled": false
+        "enabled": true,
+        "retention": "1d",
+        "replayEnabled": true,
+        "maxReplayMessages": 500
       }
     },
     "_cursors": {

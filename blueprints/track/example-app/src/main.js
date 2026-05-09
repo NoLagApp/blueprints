@@ -43,7 +43,7 @@ function renderConnect() {
             <input id="inp-assetname" type="text" placeholder="e.g. truck-01" value="truck-01" class="input input-bordered w-full" />
           </div>
           <div class="form-control gap-1">
-            <label class="label"><span class="label-text">App Name</span></label>
+            <label class="label"><span class="label-text">App Slug</span></label>
             <input id="inp-appname" type="text" placeholder="e.g. track-demo" value="track-demo" class="input input-bordered w-full" />
           </div>
           <div id="connect-error" class="text-error text-sm hidden"></div>
@@ -55,7 +55,7 @@ function renderConnect() {
 
 function renderMain() {
   const localAsset = tracker.localAsset;
-  const zones = tracker.zones || [];
+  const zones = [...tracker.zones.values()];
 
   return `
     <div class="flex flex-col h-screen bg-base-100">
@@ -277,7 +277,7 @@ function attachListeners() {
 
   document.querySelectorAll('[data-zone]').forEach(btn => {
     btn.addEventListener('click', () => {
-      const z = (tracker.zones || []).find(x => x.name === btn.dataset.zone);
+      const z = ([...tracker.zones.values()]).find(x => x.name === btn.dataset.zone);
       if (z) { activeZone = z; render(); }
     });
   });
@@ -331,6 +331,7 @@ async function handleConnect() {
       assetName,
       appName,
       debug: false,
+      url: 'wss://broker.dev.nolag.app/ws',
     });
 
     tracker.on('connected', async () => {
@@ -383,13 +384,13 @@ async function joinZone(name) {
 
   zone.on('locationUpdate', update => {
     assetLocations[update.assetId] = {
-      lat: update.lat,
-      lng: update.lng,
-      speed: update.speed,
-      heading: update.heading,
+      lat: update.point.lat,
+      lng: update.point.lng,
+      speed: update.point.speed,
+      heading: update.point.heading,
       timestamp: update.timestamp || Date.now(),
     };
-    addLog('event', `locationUpdate [${update.assetId}] lat=${update.lat?.toFixed(4)} lng=${update.lng?.toFixed(4)} spd=${update.speed}`);
+    addLog('event', `locationUpdate [${update.assetId}] lat=${update.point.lat?.toFixed(4)} lng=${update.point.lng?.toFixed(4)} spd=${update.point.speed}`);
     render();
   });
 
