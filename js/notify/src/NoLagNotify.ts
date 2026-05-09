@@ -335,13 +335,6 @@ export class NoLagNotify extends EventEmitter<NotifyClientEvents> {
 
     this._lobby = this._client.setApp(this._options.appName).setLobby(LOBBY_ID);
 
-    // Set local presence in the lobby
-    const presenceData: NotifyPresenceData = {
-      userId: this._userId,
-      metadata: this._options.metadata,
-    };
-    this._lobby.setPresence?.(presenceData);
-
     const lobbyHandler = (type: 'join' | 'leave' | 'update') =>
       (data: unknown) => {
         const event = data as LobbyPresenceEvent;

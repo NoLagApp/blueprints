@@ -5,12 +5,12 @@ import { WorkerManager } from './WorkerManager';
 import { PresenceManager } from './PresenceManager';
 import { generateId } from './utils';
 import { TOPIC_JOBS, TOPIC_PROGRESS, DEFAULT_MAX_ATTEMPTS } from './constants';
+import type { JobFilter } from './JobStore';
 import type {
   QueueRoomEvents,
   Job,
   JobProgress,
   AddJobOptions,
-  JobFilter,
   QueueWorker,
   QueuePresenceData,
   ResolvedQueueOptions,
