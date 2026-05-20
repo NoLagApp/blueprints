@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 // ── SDK list ─────────────────────────────────────────────────────────────────
-const SDKS = ['chat', 'notify', 'signal', 'stream', 'feed', 'dash', 'track', 'sync', 'queue', 'iot', 'collab'];
+const SDKS = ['chat', 'notify', 'signal', 'stream', 'feed', 'dash', 'track', 'sync', 'queue', 'iot', 'collab', 'agents'];
 
 // Files that get synced between example-app and blueprint.json
 const FILE_MAP = {
@@ -12,7 +12,19 @@ const FILE_MAP = {
   '/src/main.js': 'example-app/src/main.js',
 };
 
+// Agents SDK has multiple example apps under examples/ instead of a single example-app/
+const AGENTS_EXAMPLES = ['handoff-example', 'inbox-example', 'blackboard-example', 'observe-example', 'approve-example', 'tools-example', 'combined-example'];
+const AGENTS_FILE_MAP = {};
+for (const example of AGENTS_EXAMPLES) {
+  AGENTS_FILE_MAP[`/examples/${example}/index.html`] = `examples/${example}/index.html`;
+  AGENTS_FILE_MAP[`/examples/${example}/src/main.js`] = `examples/${example}/src/main.js`;
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
+function getFileMap(sdk) {
+  return sdk === 'agents' ? AGENTS_FILE_MAP : FILE_MAP;
+}
+
 function resolveRoot() {
   // Walk up from this script's directory to find the monorepo root
   // (the directory that contains both js/ and blueprints/ dirs)
@@ -71,7 +83,7 @@ function cmdStatus(root, sdks, _dryRun) {
     const files = bp.files ?? {};
     const diffs = [];
 
-    for (const [bpKey, relPath] of Object.entries(FILE_MAP)) {
+    for (const [bpKey, relPath] of Object.entries(getFileMap(sdk))) {
       const diskContent = readFileOrNull(path.join(root, 'blueprints', sdk, relPath));
       const bpFileContent = files[bpKey] ?? null;
 
@@ -112,7 +124,7 @@ function cmdPush(root, sdks, dryRun) {
 
     let changed = false;
 
-    for (const [bpKey, relPath] of Object.entries(FILE_MAP)) {
+    for (const [bpKey, relPath] of Object.entries(getFileMap(sdk))) {
       const diskContent = readFileOrNull(path.join(root, 'blueprints', sdk, relPath));
       if (diskContent === null) {
         console.log(`  ${sdk}: ⚠ ${relPath} not found, skipping`);
@@ -152,7 +164,7 @@ function cmdPull(root, sdks, dryRun) {
     const files = bp.files ?? {};
     let changed = false;
 
-    for (const [bpKey, relPath] of Object.entries(FILE_MAP)) {
+    for (const [bpKey, relPath] of Object.entries(getFileMap(sdk))) {
       const bpFileContent = files[bpKey];
       if (bpFileContent === undefined || bpFileContent === null) continue;
 
