@@ -331,7 +331,6 @@ async function handleConnect() {
       assetName,
       appName,
       debug: false,
-      url: 'wss://broker.dev.nolag.app/ws',
     });
 
     tracker.on('connected', async () => {

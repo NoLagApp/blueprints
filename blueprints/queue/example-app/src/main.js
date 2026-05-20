@@ -489,7 +489,6 @@ function bindStaticEvents() {
         concurrency,
         appName,
         debug: false,
-        url: 'wss://broker.dev.nolag.app/ws',
         queues: ['image-processing', 'email-dispatch'],
       });
       queue.on('connected', () => {

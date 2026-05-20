@@ -128,7 +128,6 @@ async function handleConnect() {
   const username = document.getElementById('inp-username').value.trim() || 'anonymous';
   const appName = document.getElementById('inp-appname').value.trim() || 'feed-demo';
 
-  sdk = new NoLagFeed(token, { username, appName, debug: true, url: 'wss://broker.dev.nolag.app/ws', channels: ['main-feed'] });
 
   sdk.on('connected', async () => {
     log('connected', 'event');

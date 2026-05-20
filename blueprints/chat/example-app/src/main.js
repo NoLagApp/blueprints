@@ -431,7 +431,6 @@ async function doConnect(token, username, appName) {
     username,
     appName,
     debug: true,
-    url: 'wss://broker.dev.nolag.app/ws',
     rooms: availableRooms,
   });
 

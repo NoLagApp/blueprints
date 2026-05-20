@@ -199,7 +199,6 @@ async function handleConnect() {
     color,
     appName,
     debug: false,
-    url: 'wss://broker.dev.nolag.app/ws',
     documents: ['my-doc'],
   });
 

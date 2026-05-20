@@ -204,7 +204,6 @@ async function connect() {
     role,
     appName,
     debug: false,
-    url: 'wss://broker.dev.nolag.app/ws',
     groups: ['factory-floor'],
   });
 

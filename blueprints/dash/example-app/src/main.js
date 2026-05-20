@@ -302,7 +302,6 @@ async function handleConnect() {
       username: localUsername,
       appName,
       debug: false,
-      url: 'wss://broker.dev.nolag.app/ws',
     });
 
     dash.on('connected', async () => {

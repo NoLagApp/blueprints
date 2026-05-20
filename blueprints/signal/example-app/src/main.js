@@ -212,7 +212,6 @@ async function joinCall() {
   signal = new NoLagSignal(token, {
     appName,
     debug: false,
-    url: 'wss://broker.dev.nolag.app/ws',
   });
 
   signal.on('connected', async () => {

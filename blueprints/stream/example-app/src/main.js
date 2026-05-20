@@ -143,7 +143,7 @@ async function handleConnect() {
   currentRole = role;
   addLog(`Connecting as ${role} "${username}"...`, 'action');
 
-  sdk = new NoLagStream(token, { username, role, appName, debug: false, url: 'wss://broker.dev.nolag.app/ws' });
+  sdk = new NoLagStream(token, { username, role, appName, debug: false });
 
   sdk.on('connected', async () => {
     addLog('Connected', 'event');

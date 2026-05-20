@@ -216,7 +216,6 @@ window._connect = async function () {
     notify = new NoLagNotify(token, {
       appName,
       debug: true,
-      url: 'wss://broker.dev.nolag.app/ws',
       channels: CHANNEL_NAMES
     });
     wireMainEvents(notify);
