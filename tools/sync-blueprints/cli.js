@@ -12,8 +12,8 @@ const FILE_MAP = {
   '/src/main.js': 'example-app/src/main.js',
 };
 
-// Agents SDK has multiple example apps under examples/ instead of a single example-app/
-const AGENTS_EXAMPLES = ['handoff-example', 'inbox-example', 'blackboard-example', 'observe-example', 'approve-example', 'tools-example', 'combined-example'];
+// Agents SDK has its example app under examples/combined-example/
+const AGENTS_EXAMPLES = ['combined-example'];
 const AGENTS_FILE_MAP = {};
 for (const example of AGENTS_EXAMPLES) {
   AGENTS_FILE_MAP[`/examples/${example}/index.html`] = `examples/${example}/index.html`;
