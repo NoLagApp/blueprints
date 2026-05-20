@@ -1,5 +1,5 @@
 import { EventEmitter } from "./EventEmitter";
-import type { AgentRoomEvents, TaskEnvelope, ResultEnvelope } from "./types";
+import type { AgentRoomEvents, TaskEnvelope, ResultEnvelope, AgentPresenceData } from "./types";
 import {
   TOPIC_TASKS,
   TOPIC_RESULTS,
@@ -27,16 +27,27 @@ export class AgentRoom extends EventEmitter<AgentRoomEvents> {
   private _roomContext: any; // RoomContext from js-sdk
   private _log: (...args: unknown[]) => void;
 
+  private _presence: AgentPresenceData | undefined;
+
   constructor(
     name: string,
     roomContext: any,
     log: (...args: unknown[]) => void,
+    presence?: AgentPresenceData,
   ) {
     super();
     this.name = name;
     this._roomContext = roomContext;
     this._log = log;
+    this._presence = presence;
     this._wireTopicListeners();
+    this._wirePresenceListeners();
+
+    // Set presence if provided
+    if (presence) {
+      this._log(`setting presence in room ${name}:`, presence);
+      this._roomContext.setPresence(presence);
+    }
   }
 
   /** Get the underlying RoomContext for advanced usage */
@@ -86,6 +97,56 @@ export class AgentRoom extends EventEmitter<AgentRoomEvents> {
     } else {
       this._roomContext.emit(topic, data);
     }
+  }
+
+  /** Update presence data in this room */
+  setPresence(data: AgentPresenceData): void {
+    this._presence = data;
+    this._log(`updating presence in room ${this.name}`);
+    this._roomContext.setPresence(data);
+  }
+
+  /** Fetch current presence snapshot for this room */
+  async fetchPresence(): Promise<Array<{ actorId: string; data: AgentPresenceData }>> {
+    try {
+      const actors = await this._roomContext.fetchPresence();
+      return (actors || []).map((a: any) => ({
+        actorId: a.actorTokenId || a.actorId,
+        data: a.presence || a.data || {},
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  private _wirePresenceListeners(): void {
+    // Listen for js-sdk presence events on the underlying client
+    // The js-sdk emits these as 'presence:join', 'presence:leave', 'presence:update'
+    // through the room context's internal client reference
+    // For now, we proxy them if the roomContext supports it
+    const client = this._roomContext?._client || this._roomContext?.client;
+    if (!client) return;
+
+    client.on?.('presence:join', (evt: any) => {
+      if (evt?.roomId === this.name || !evt?.roomId) {
+        this._log(`presence:join in room ${this.name}:`, evt?.actorId);
+        this.emit('presenceJoin', evt?.actorId, evt?.data || {});
+      }
+    });
+
+    client.on?.('presence:leave', (evt: any) => {
+      if (evt?.roomId === this.name || !evt?.roomId) {
+        this._log(`presence:leave in room ${this.name}:`, evt?.actorId);
+        this.emit('presenceLeave', evt?.actorId);
+      }
+    });
+
+    client.on?.('presence:update', (evt: any) => {
+      if (evt?.roomId === this.name || !evt?.roomId) {
+        this._log(`presence:update in room ${this.name}:`, evt?.actorId);
+        this.emit('presenceUpdate', evt?.actorId, evt?.data || {});
+      }
+    });
   }
 
   private _wireTopicListeners(): void {

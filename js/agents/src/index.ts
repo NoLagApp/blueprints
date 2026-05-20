@@ -42,6 +42,7 @@ export type {
   ApprovalResponseEnvelope,
   ToolRequestEnvelope,
   ToolResponseEnvelope,
+  AgentPresenceData,
   AgentClientEvents,
   AgentRoomEvents,
 } from "./types";

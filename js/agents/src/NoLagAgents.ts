@@ -45,6 +45,7 @@ export class NoLagAgents extends EventEmitter<AgentClientEvents> {
       appName: options.appName ?? DEFAULT_APP_NAME,
       debug: options.debug ?? false,
       rooms: options.rooms ?? [DEFAULT_ROOM],
+      presence: options.presence,
       clientOptions: options.clientOptions,
     };
     this._log = createLogger("NoLagAgents", this._options.debug);
@@ -127,7 +128,7 @@ export class NoLagAgents extends EventEmitter<AgentClientEvents> {
 
     this._log(`joining room: ${name}`);
     const roomContext = this._appContext.setRoom(name);
-    agentRoom = new AgentRoom(name, roomContext, this._log);
+    agentRoom = new AgentRoom(name, roomContext, this._log, this._options.presence);
     this._rooms.set(name, agentRoom);
     return agentRoom;
   }

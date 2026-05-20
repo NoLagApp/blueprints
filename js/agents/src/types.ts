@@ -11,6 +11,8 @@ export interface NoLagAgentsOptions {
   debug?: boolean;
   /** Rooms to auto-join on connect */
   rooms?: string[];
+  /** Agent presence data (advertised to other agents in the room) */
+  presence?: AgentPresenceData;
   /** Additional NoLag client options */
   clientOptions?: Partial<NoLagOptions>;
 }
@@ -19,6 +21,7 @@ export interface ResolvedAgentsOptions {
   appName: string;
   debug: boolean;
   rooms: string[];
+  presence?: AgentPresenceData;
   clientOptions?: Partial<NoLagOptions>;
 }
 
@@ -116,6 +119,21 @@ export interface ToolResponseEnvelope {
 }
 
 // ============================================================
+// Presence
+// ============================================================
+
+export interface AgentPresenceData {
+  /** Agent display name */
+  name: string;
+  /** Agent role: orchestrator, agent, observer, human, tool-server */
+  role: string;
+  /** Agent capabilities (for task routing) */
+  capabilities?: string[];
+  /** Custom metadata */
+  metadata?: Record<string, unknown>;
+}
+
+// ============================================================
 // Events
 // ============================================================
 
@@ -136,4 +154,7 @@ export interface AgentRoomEvents {
   approvalResponse: [envelope: ApprovalResponseEnvelope];
   toolRequest: [envelope: ToolRequestEnvelope];
   toolResponse: [envelope: ToolResponseEnvelope];
+  presenceJoin: [actorId: string, data: AgentPresenceData];
+  presenceLeave: [actorId: string];
+  presenceUpdate: [actorId: string, data: AgentPresenceData];
 }
