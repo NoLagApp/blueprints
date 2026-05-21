@@ -11,33 +11,59 @@ import {
 } from "./constants";
 
 /**
+ * ConnectedAgent — represents an agent discovered via presence.
+ */
+export interface ConnectedAgent {
+  actorId: string;
+  name: string;
+  role: string;
+  capabilities: string[];
+  metadata?: Record<string, unknown>;
+  connectedAt: number;
+}
+
+/**
  * AgentRoom — wraps a RoomContext from @nolag/js-sdk.
  *
- * Provides typed pub/sub for agent coordination topics.
- * Used by all pattern classes (Handoff, Blackboard, Inbox, etc.).
+ * Provides typed pub/sub for agent coordination topics,
+ * presence-based service discovery, and capability routing.
  *
  * @example
  * ```typescript
  * const room = agents.room('default-workflow');
+ *
+ * // Service discovery - see who's connected
+ * const agents = room.getConnectedAgents();
+ * const summarizers = room.findAgents('summarize');
+ *
+ * // Capability-filtered task handler
  * room.on('task', (envelope) => console.log('New task:', envelope));
  * ```
  */
 export class AgentRoom extends EventEmitter<AgentRoomEvents> {
   readonly name: string;
+  readonly agentId: string;
   private _roomContext: any; // RoomContext from js-sdk
+  private _client: any; // NoLagSocket from js-sdk (for presence events)
   private _log: (...args: unknown[]) => void;
-
   private _presence: AgentPresenceData | undefined;
+
+  /** Registry of connected agents discovered via presence */
+  private _agents = new Map<string, ConnectedAgent>();
 
   constructor(
     name: string,
     roomContext: any,
+    client: any,
     log: (...args: unknown[]) => void,
+    agentId: string,
     presence?: AgentPresenceData,
   ) {
     super();
     this.name = name;
+    this.agentId = agentId;
     this._roomContext = roomContext;
+    this._client = client;
     this._log = log;
     this._presence = presence;
     this._wireTopicListeners();
@@ -48,7 +74,78 @@ export class AgentRoom extends EventEmitter<AgentRoomEvents> {
       this._log(`setting presence in room ${name}:`, presence);
       this._roomContext.setPresence(presence);
     }
+
+    // Fetch initial presence snapshot
+    this._fetchInitialPresence();
   }
+
+  // ============================================================
+  // SERVICE DISCOVERY
+  // ============================================================
+
+  /** Get all currently connected agents */
+  getConnectedAgents(): ConnectedAgent[] {
+    return Array.from(this._agents.values());
+  }
+
+  /** Find agents that have a specific capability */
+  findAgents(capability: string): ConnectedAgent[] {
+    return Array.from(this._agents.values()).filter(
+      (a) => a.capabilities.includes(capability),
+    );
+  }
+
+  /** Check if any connected agent can handle a capability */
+  hasCapability(capability: string): boolean {
+    return this.findAgents(capability).length > 0;
+  }
+
+  /** Get all capabilities available across connected agents */
+  getAvailableCapabilities(): string[] {
+    const caps = new Set<string>();
+    for (const agent of this._agents.values()) {
+      for (const cap of agent.capabilities) {
+        caps.add(cap);
+      }
+    }
+    return Array.from(caps);
+  }
+
+  // ============================================================
+  // PRESENCE
+  // ============================================================
+
+  /** Update this agent's presence data */
+  setPresence(data: AgentPresenceData): void {
+    this._presence = data;
+    this._log(`updating presence in room ${this.name}`);
+    this._roomContext.setPresence(data);
+  }
+
+  /** Fetch current presence snapshot for this room */
+  async fetchPresence(): Promise<ConnectedAgent[]> {
+    try {
+      const actors = await this._roomContext.fetchPresence();
+      return (actors || []).map((a: any) => this._toConnectedAgent(a));
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * @internal Emit a presence event (used by NoLagAgents for lobby forwarding)
+   */
+  _emitPresence(event: 'presenceJoin' | 'presenceLeave' | 'presenceUpdate', actorId: string, data?: AgentPresenceData): void {
+    if (event === 'presenceLeave') {
+      this.emit('presenceLeave', actorId);
+    } else {
+      this.emit(event, actorId, data || {} as AgentPresenceData);
+    }
+  }
+
+  // ============================================================
+  // PUBLISH (with automatic agentId injection)
+  // ============================================================
 
   /** Get the underlying RoomContext for advanced usage */
   get context(): any {
@@ -57,21 +154,37 @@ export class AgentRoom extends EventEmitter<AgentRoomEvents> {
 
   /** Publish to the tasks topic */
   publishTask(envelope: TaskEnvelope): void {
+    // Auto-set createdBy if not set
+    if (!envelope.createdBy) {
+      envelope.createdBy = this.agentId;
+    }
     this._publish(TOPIC_TASKS, envelope);
   }
 
   /** Publish to the results topic */
   publishResult(envelope: ResultEnvelope): void {
+    // Auto-set completedBy if not set
+    if (!envelope.completedBy) {
+      envelope.completedBy = this.agentId;
+    }
     this._publish(TOPIC_RESULTS, envelope);
   }
 
   /** Publish to the state topic (retained) */
   publishState(data: Record<string, unknown>): void {
+    // Auto-set updatedBy if not set
+    if (!(data as any).updatedBy) {
+      (data as any).updatedBy = this.agentId;
+    }
     this._publish(TOPIC_STATE, data, { retain: true });
   }
 
   /** Publish to the events topic */
   publishEvent(data: Record<string, unknown>): void {
+    // Auto-set emittedBy if not set
+    if (!(data as any).emittedBy) {
+      (data as any).emittedBy = this.agentId;
+    }
     this._publish(TOPIC_EVENTS, data);
   }
 
@@ -90,6 +203,10 @@ export class AgentRoom extends EventEmitter<AgentRoomEvents> {
     this._publish(TOPIC_APPROVAL, data, { retain: true });
   }
 
+  // ============================================================
+  // INTERNALS
+  // ============================================================
+
   private _publish(topic: string, data: unknown, options?: { retain?: boolean }): void {
     this._log(`publish to ${topic} in room ${this.name}`);
     if (options) {
@@ -99,52 +216,88 @@ export class AgentRoom extends EventEmitter<AgentRoomEvents> {
     }
   }
 
-  /** Update presence data in this room */
-  setPresence(data: AgentPresenceData): void {
-    this._presence = data;
-    this._log(`updating presence in room ${this.name}`);
-    this._roomContext.setPresence(data);
+  private _toConnectedAgent(actor: any): ConnectedAgent {
+    const presence = actor.presence || actor.data || {};
+    return {
+      actorId: actor.actorTokenId || actor.actorId || '',
+      name: presence.name || actor.actorTokenId || '',
+      role: presence.role || 'agent',
+      capabilities: presence.capabilities || [],
+      metadata: presence.metadata,
+      connectedAt: actor.joinedAt || Date.now(),
+    };
   }
 
-  /** Fetch current presence snapshot for this room */
-  async fetchPresence(): Promise<Array<{ actorId: string; data: AgentPresenceData }>> {
+  private async _fetchInitialPresence(): Promise<void> {
     try {
       const actors = await this._roomContext.fetchPresence();
-      return (actors || []).map((a: any) => ({
-        actorId: a.actorTokenId || a.actorId,
-        data: a.presence || a.data || {},
-      }));
+      if (Array.isArray(actors)) {
+        for (const actor of actors) {
+          const connected = this._toConnectedAgent(actor);
+          if (connected.actorId) {
+            this._agents.set(connected.actorId, connected);
+          }
+        }
+        this._log(`discovered ${this._agents.size} agents in room ${this.name}`);
+      }
     } catch {
-      return [];
+      // fetchPresence may not be available yet
     }
   }
 
   private _wirePresenceListeners(): void {
-    // Listen for js-sdk presence events on the underlying client
-    // The js-sdk emits these as 'presence:join', 'presence:leave', 'presence:update'
-    // through the room context's internal client reference
-    // For now, we proxy them if the roomContext supports it
-    const client = this._roomContext?._client || this._roomContext?.client;
-    if (!client) return;
+    if (!this._client) return;
+    const client = this._client;
 
     client.on?.('presence:join', (evt: any) => {
       if (evt?.roomId === this.name || !evt?.roomId) {
-        this._log(`presence:join in room ${this.name}:`, evt?.actorId);
-        this.emit('presenceJoin', evt?.actorId, evt?.data || {});
+        const id = evt?.actorId || evt?.actorTokenId;
+        const data = evt?.data || evt?.presence || {};
+        if (id) {
+          const agent: ConnectedAgent = {
+            actorId: id,
+            name: data.name || id,
+            role: data.role || 'agent',
+            capabilities: data.capabilities || [],
+            metadata: data.metadata,
+            connectedAt: Date.now(),
+          };
+          this._agents.set(id, agent);
+          this._log(`agent joined room ${this.name}:`, agent.name, agent.capabilities);
+          this.emit('presenceJoin', id, data);
+        }
       }
     });
 
     client.on?.('presence:leave', (evt: any) => {
       if (evt?.roomId === this.name || !evt?.roomId) {
-        this._log(`presence:leave in room ${this.name}:`, evt?.actorId);
-        this.emit('presenceLeave', evt?.actorId);
+        const id = evt?.actorId || evt?.actorTokenId;
+        if (id) {
+          const agent = this._agents.get(id);
+          this._agents.delete(id);
+          this._log(`agent left room ${this.name}:`, agent?.name || id);
+          this.emit('presenceLeave', id);
+        }
       }
     });
 
     client.on?.('presence:update', (evt: any) => {
       if (evt?.roomId === this.name || !evt?.roomId) {
-        this._log(`presence:update in room ${this.name}:`, evt?.actorId);
-        this.emit('presenceUpdate', evt?.actorId, evt?.data || {});
+        const id = evt?.actorId || evt?.actorTokenId;
+        const data = evt?.data || evt?.presence || {};
+        if (id) {
+          const existing = this._agents.get(id);
+          const agent: ConnectedAgent = {
+            actorId: id,
+            name: data.name || existing?.name || id,
+            role: data.role || existing?.role || 'agent',
+            capabilities: data.capabilities || existing?.capabilities || [],
+            metadata: data.metadata || existing?.metadata,
+            connectedAt: existing?.connectedAt || Date.now(),
+          };
+          this._agents.set(id, agent);
+          this.emit('presenceUpdate', id, data);
+        }
       }
     });
   }

@@ -103,11 +103,13 @@ const WORKERS = [
 // Connect — real NoLag connections
 // ============================================================
 
-async function connectAgent(name, token) {
+async function connectAgent(name, token, presence) {
   const client = new NoLagAgents(token, {
     appName: APP_NAME,
+    agentId: name,
     rooms: [ROOM_NAME],
     debug: false,
+    presence,
   });
   await client.connect();
   connections[name] = client;
@@ -147,13 +149,23 @@ async function startConnection() {
   try {
     log('action', 'Connecting all agents to NoLag...');
 
-    // Connect all agents in parallel
+    // Connect all agents in parallel with presence (service discovery)
     const [orchRoom, w1Room, w2Room, w3Room, w4Room] = await Promise.all([
-      connectAgent('orchestrator', orchToken),
-      connectAgent('worker-1', w1Token),
-      connectAgent('worker-2', w2Token),
-      connectAgent('worker-3', w3Token),
-      connectAgent('worker-4', w4Token),
+      connectAgent('orchestrator', orchToken, {
+        name: 'orchestrator', role: 'orchestrator', capabilities: [],
+      }),
+      connectAgent('worker-1', w1Token, {
+        name: 'Researcher', role: 'agent', capabilities: ['research'],
+      }),
+      connectAgent('worker-2', w2Token, {
+        name: 'Summarizer', role: 'agent', capabilities: ['summarize'],
+      }),
+      connectAgent('worker-3', w3Token, {
+        name: 'Reviewer', role: 'agent', capabilities: ['review'],
+      }),
+      connectAgent('worker-4', w4Token, {
+        name: 'Researcher B', role: 'agent', capabilities: ['research'],
+      }),
     ]);
 
     log('success', `Connected 5 agents to app "${APP_NAME}" / room "${ROOM_NAME}"`);
@@ -168,8 +180,7 @@ async function startConnection() {
     ];
     workerRooms.forEach(({ worker: w, room }) => {
       const handoff = new Handoff(room);
-      handoff.onTask((task, respond) => {
-        if (task.capability !== w.capability) return;
+      handoff.onTask([w.capability], (task, respond) => {
         const isShared = WORKERS.filter(x => x.capability === w.capability).length > 1;
         if (isShared) {
           if (claimedTasks.has(task.taskId)) return;

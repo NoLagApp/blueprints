@@ -7,10 +7,14 @@ import type { NoLagOptions } from "@nolag/js-sdk";
 export interface NoLagAgentsOptions {
   /** NoLag app slug for the agents workflow */
   appName?: string;
+  /** Unique agent ID (defaults to a generated UUID) */
+  agentId?: string;
   /** Enable debug logging */
   debug?: boolean;
   /** Rooms to auto-join on connect */
   rooms?: string[];
+  /** Lobby slug to subscribe to for cross-room presence observation */
+  lobby?: string;
   /** Agent presence data (advertised to other agents in the room) */
   presence?: AgentPresenceData;
   /** Additional NoLag client options */
@@ -19,8 +23,10 @@ export interface NoLagAgentsOptions {
 
 export interface ResolvedAgentsOptions {
   appName: string;
+  agentId: string;
   debug: boolean;
   rooms: string[];
+  lobby?: string;
   presence?: AgentPresenceData;
   clientOptions?: Partial<NoLagOptions>;
 }

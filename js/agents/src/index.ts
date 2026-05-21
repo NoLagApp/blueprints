@@ -4,7 +4,7 @@
  */
 
 export { NoLagAgents } from "./NoLagAgents";
-export { AgentRoom } from "./AgentRoom";
+export { AgentRoom, type ConnectedAgent } from "./AgentRoom";
 export { EventEmitter } from "./EventEmitter";
 export { CorrelationManager } from "./correlation";
 
