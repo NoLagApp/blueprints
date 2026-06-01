@@ -4,6 +4,15 @@ node_modules/
 # Build output
 dist/
 
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+
+# Go
+go/*/vendor/
+
 # IDE
 .idea/
 .vscode/
