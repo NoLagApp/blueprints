@@ -51,14 +51,24 @@ class AgentRoom(EventEmitter):
         self._wire_presence_listeners()
 
     async def initialize(self) -> None:
-        """Async initialization — subscribe to topics and set presence."""
+        """Async initialization — subscribe to topics and set presence.
+
+        Subscription semantics:
+        - Work-distribution topics (tasks, tools requests) may be
+          load-balanced so a pool shares each message one-of-N.
+        - The results topic carries DIRECTED replies (task results and tool
+          responses) published with ``filter=<recipient agent_id>``; each
+          agent subscribes only to its own filter sub-topic. The broker
+          routes each reply straight to the requester — no fan-out waste,
+          and immune to load-balance groups (an LB'd or broadcast reply
+          could land on a member that doesn't hold the pending correlation).
+        - Remaining topics are broadcasts claimed client-side and must
+          never be load-balanced.
+        """
         from nolag import SubscribeOptions
 
-        all_topics = [
-            TOPIC_TASKS, TOPIC_RESULTS, TOPIC_STATE,
-            TOPIC_EVENTS, TOPIC_INBOX, TOPIC_TOOLS, TOPIC_APPROVAL,
-        ]
-        for topic in all_topics:
+        # Work distribution: connection-level load balance applies
+        for topic in (TOPIC_TASKS, TOPIC_TOOLS):
             if self._load_balance and topic in self._load_balance_topics:
                 opts = SubscribeOptions(
                     load_balance=True,
@@ -68,6 +78,16 @@ class AgentRoom(EventEmitter):
                 await self._room_context.subscribe(topic, opts)
             else:
                 await self._room_context.subscribe(topic)
+
+        # Directed replies: own-agent filter, never load-balanced
+        await self._room_context.subscribe(
+            TOPIC_RESULTS,
+            SubscribeOptions(load_balance=False, filters=[self.agent_id]),
+        )
+
+        # Broadcasts: never load-balanced
+        for topic in (TOPIC_STATE, TOPIC_EVENTS, TOPIC_INBOX, TOPIC_APPROVAL):
+            await self._room_context.subscribe(topic, SubscribeOptions(load_balance=False))
 
         if self._presence:
             self._log(f"setting presence in room {self.name}:", self._presence)
@@ -133,7 +153,9 @@ class AgentRoom(EventEmitter):
         d = envelope.to_dict() if hasattr(envelope, "to_dict") else envelope
         if not d.get("completedBy"):
             d["completedBy"] = self.agent_id
-        await self._publish(TOPIC_RESULTS, d)
+        # Directed to the dispatcher's filter sub-topic when a reply address
+        # is set; unfiltered publishes only reach pre-directed-reply SDKs.
+        await self._publish(TOPIC_RESULTS, d, filter=d.get("replyTo"))
 
     async def publish_state(self, data: dict[str, Any]) -> None:
         if not data.get("updatedBy"):
@@ -149,6 +171,13 @@ class AgentRoom(EventEmitter):
         await self._publish(TOPIC_INBOX, data)
 
     async def publish_tools(self, data: dict[str, Any]) -> None:
+        # Requests go to the tools topic (load-balanced one-of-N across
+        # server replicas). Responses are directed to the requester on the
+        # results topic via filter — never load-balanced, never broadcast.
+        reply_to = data.get("replyTo")
+        if data.get("type") == "tool_response" and isinstance(reply_to, str) and reply_to:
+            await self._publish(TOPIC_RESULTS, data, filter=reply_to)
+            return
         await self._publish(TOPIC_TOOLS, data)
 
     async def publish_approval(self, data: dict[str, Any]) -> None:
@@ -156,12 +185,17 @@ class AgentRoom(EventEmitter):
 
     # ── Internals ──
 
-    async def _publish(self, topic: str, data: Any, retain: bool = False) -> None:
+    async def _publish(
+        self,
+        topic: str,
+        data: Any,
+        retain: bool = False,
+        filter: str | None = None,
+    ) -> None:
         self._log(f"publish to {topic} in room {self.name}")
-        from .types import _to_camel_dict
         from nolag import EmitOptions
-        if retain:
-            await self._room_context.emit(topic, data, EmitOptions(retain=True))
+        if retain or filter:
+            await self._room_context.emit(topic, data, EmitOptions(retain=retain, filter=filter))
         else:
             await self._room_context.emit(topic, data)
 
@@ -205,12 +239,22 @@ class AgentRoom(EventEmitter):
         if not self._client:
             return
 
+        def _actor_id_of(actor: Any) -> str | None:
+            # The SDK may emit ActorPresence objects or plain dicts
+            if isinstance(actor, dict):
+                return actor.get("actor_token_id") or actor.get("actor_id")
+            return getattr(actor, "actor_token_id", None)
+
+        def _presence_of(actor: Any) -> dict[str, Any]:
+            if isinstance(actor, dict):
+                return actor.get("presence") or actor.get("data") or {}
+            return getattr(actor, "presence", {}) or {}
+
         def _on_join(actor: Any) -> None:
-            # SDK sends ActorPresence objects for presence:join
-            actor_id = getattr(actor, "actor_token_id", None)
+            actor_id = _actor_id_of(actor)
             if not actor_id:
                 return
-            p = getattr(actor, "presence", {}) or {}
+            p = _presence_of(actor)
             agent = ConnectedAgent(
                 actor_id=actor_id,
                 name=p.get("name", actor_id),
@@ -230,7 +274,7 @@ class AgentRoom(EventEmitter):
             self._emit("presence_join", actor_id, pdata)
 
         def _on_leave(actor: Any) -> None:
-            actor_id = getattr(actor, "actor_token_id", None)
+            actor_id = _actor_id_of(actor)
             if not actor_id:
                 return
             self._agents.pop(actor_id, None)
@@ -238,10 +282,10 @@ class AgentRoom(EventEmitter):
             self._emit("presence_leave", actor_id)
 
         def _on_update(actor: Any) -> None:
-            actor_id = getattr(actor, "actor_token_id", None)
+            actor_id = _actor_id_of(actor)
             if not actor_id:
                 return
-            p = getattr(actor, "presence", {}) or {}
+            p = _presence_of(actor)
             existing = self._agents.get(actor_id)
             agent = ConnectedAgent(
                 actor_id=actor_id,
@@ -269,13 +313,22 @@ class AgentRoom(EventEmitter):
         # Here we just wire the message handlers (sync .on() calls)
         simple_map = [
             (TOPIC_TASKS, "task"),
-            (TOPIC_RESULTS, "result"),
             (TOPIC_STATE, "state_change"),
             (TOPIC_EVENTS, "event"),
             (TOPIC_INBOX, "inbox"),
         ]
         for topic, event_name in simple_map:
             self._room_context.on(topic, self._make_handler(topic, event_name))
+
+        def _on_results(data: Any, *_args: Any) -> None:
+            # Multiplexed: results topic carries task results AND tool
+            # responses, both filter-directed to this agent
+            self._log(f"received {TOPIC_RESULTS} in room {self.name}")
+            d = data if isinstance(data, dict) else {}
+            if d.get("type") == "tool_response":
+                self._emit("tool_response", data)
+            else:
+                self._emit("result", data)
 
         def _on_approval(data: Any, *_args: Any) -> None:
             self._log(f"received {TOPIC_APPROVAL} in room {self.name}")
@@ -286,6 +339,8 @@ class AgentRoom(EventEmitter):
                 self._emit("approval_request", data)
 
         def _on_tools(data: Any, *_args: Any) -> None:
+            # tool_response is still accepted here for backward compatibility
+            # with responders on older SDK versions
             self._log(f"received {TOPIC_TOOLS} in room {self.name}")
             d = data if isinstance(data, dict) else {}
             if d.get("type") == "tool_response":
@@ -293,6 +348,7 @@ class AgentRoom(EventEmitter):
             else:
                 self._emit("tool_request", data)
 
+        self._room_context.on(TOPIC_RESULTS, _on_results)
         self._room_context.on(TOPIC_APPROVAL, _on_approval)
         self._room_context.on(TOPIC_TOOLS, _on_tools)
 

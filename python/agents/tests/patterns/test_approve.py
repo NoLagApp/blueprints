@@ -67,7 +67,7 @@ class TestApprove:
         topic, data, opts = mock_room_context._published[0]
         assert topic == "approval"
         assert data["action"] == "action"
-        assert opts == {"retain": True}
+        assert opts is not None and opts.retain is True
 
         # Clean up
         approve.dispose()

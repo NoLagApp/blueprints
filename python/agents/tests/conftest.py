@@ -12,24 +12,34 @@ from nolag_agents.types import AgentPresenceData
 
 
 class MockRoomContext:
-    """Mock of a nolag Room for testing."""
+    """Mock of a nolag Room for testing (async API, matching the real Room)."""
 
     def __init__(self) -> None:
         self._listeners: dict[str, list[Callable[..., Any]]] = defaultdict(list)
-        self._subscribed: list[str] = []
-        self._published: list[tuple[str, Any, dict[str, Any] | None]] = []
+        self._subscribed: list[tuple[str, Any]] = []
+        self._published: list[tuple[str, Any, Any]] = []
         self._presence: dict[str, Any] | None = None
 
-    def subscribe(self, topic: str) -> None:
-        self._subscribed.append(topic)
+    async def subscribe(self, topic: str, options: Any = None) -> None:
+        self._subscribed.append((topic, options))
+
+    @property
+    def subscribed_topics(self) -> list[str]:
+        return [t for t, _ in self._subscribed]
+
+    def subscribe_options(self, topic: str) -> Any:
+        for t, opts in self._subscribed:
+            if t == topic:
+                return opts
+        return None
 
     def on(self, topic: str, handler: Callable[..., Any]) -> None:
         self._listeners[topic].append(handler)
 
-    def emit(self, topic: str, data: Any, options: dict[str, Any] | None = None) -> None:
+    async def emit(self, topic: str, data: Any, options: Any = None) -> None:
         self._published.append((topic, data, options))
 
-    def set_presence(self, data: dict[str, Any]) -> None:
+    async def set_presence(self, data: dict[str, Any]) -> None:
         self._presence = data
 
     async def fetch_presence(self) -> list[dict[str, Any]]:

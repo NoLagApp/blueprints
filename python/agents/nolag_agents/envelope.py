@@ -49,6 +49,7 @@ def create_result_envelope(
     payload: dict[str, Any],
     error: Optional[dict[str, str]] = None,
     completed_by: Optional[str] = None,
+    reply_to: Optional[str] = None,
 ) -> ResultEnvelope:
     return ResultEnvelope(
         type="result",
@@ -59,6 +60,7 @@ def create_result_envelope(
         error=error,
         completed_at=create_timestamp(),
         completed_by=completed_by,
+        reply_to=reply_to,
     )
 
 
@@ -160,6 +162,7 @@ def create_tool_response(
     result: Any,
     error: Optional[dict[str, str]] = None,
     responded_by: Optional[str] = None,
+    reply_to: Optional[str] = None,
 ) -> ToolResponseEnvelope:
     return ToolResponseEnvelope(
         type="tool_response",
@@ -170,4 +173,5 @@ def create_tool_response(
         error=error,
         responded_by=responded_by,
         responded_at=create_timestamp(),
+        reply_to=reply_to,
     )

@@ -9,14 +9,49 @@ def _noop(*args):
 
 
 class TestAgentRoom:
-    def test_subscribes_to_all_topics(self, mock_room_context):
+    async def test_subscribes_to_all_topics(self, mock_room_context):
         room = AgentRoom("test", mock_room_context, MockClient(), _noop, "agent-1")
+        await room.initialize()
         expected = {"tasks", "results", "state", "events", "inbox", "tools", "approval"}
-        assert set(mock_room_context._subscribed) == expected
+        assert set(mock_room_context.subscribed_topics) == expected
 
-    def test_sets_presence(self, mock_room_context):
+    async def test_results_subscription_is_filtered_and_not_load_balanced(self, mock_room_context):
+        # Directed replies: each agent listens only on its own filter
+        # sub-topic of results, never load-balanced
+        room = AgentRoom("test", mock_room_context, MockClient(), _noop, "agent-1")
+        await room.initialize()
+        opts = mock_room_context.subscribe_options("results")
+        assert opts is not None
+        assert opts.load_balance is False
+        assert opts.filters == ["agent-1"]
+
+    async def test_broadcast_topics_never_load_balanced(self, mock_room_context):
+        room = AgentRoom(
+            "test", mock_room_context, MockClient(), _noop, "agent-1",
+            load_balance=True, load_balance_group="pool-1",
+        )
+        await room.initialize()
+        for topic in ("state", "events", "inbox", "approval"):
+            opts = mock_room_context.subscribe_options(topic)
+            assert opts is not None, topic
+            assert opts.load_balance is False, topic
+
+    async def test_work_topics_honor_load_balance(self, mock_room_context):
+        room = AgentRoom(
+            "test", mock_room_context, MockClient(), _noop, "agent-1",
+            load_balance=True, load_balance_group="pool-1",
+        )
+        await room.initialize()
+        for topic in ("tasks", "tools"):
+            opts = mock_room_context.subscribe_options(topic)
+            assert opts is not None, topic
+            assert opts.load_balance is True, topic
+            assert opts.load_balance_group == "pool-1", topic
+
+    async def test_sets_presence(self, mock_room_context):
         presence = AgentPresenceData(name="Test", role="agent", capabilities=["cap1"])
         room = AgentRoom("test", mock_room_context, MockClient(), _noop, "agent-1", presence)
+        await room.initialize()
         assert mock_room_context._presence == {"name": "Test", "role": "agent", "capabilities": ["cap1"]}
 
     def test_emits_task_event(self, agent_room, mock_room_context):
@@ -78,7 +113,7 @@ class TestAgentRoom:
         assert len(mock_room_context._published) == 1
         topic, data, opts = mock_room_context._published[0]
         assert topic == "state"
-        assert opts == {"retain": True}
+        assert opts is not None and opts.retain is True
 
 
 class TestServiceDiscovery:

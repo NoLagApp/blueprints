@@ -63,6 +63,9 @@ class ResultEnvelope:
     error: Optional[dict[str, str]] = None
     completed_at: int = 0
     completed_by: Optional[str] = None
+    # Reply address (agent_id of the dispatcher) — used as the publish filter
+    # for directed delivery
+    reply_to: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
         return _to_camel_dict(asdict(self))
@@ -150,6 +153,9 @@ class ToolResponseEnvelope:
     error: Optional[dict[str, str]] = None
     responded_by: Optional[str] = None
     responded_at: int = 0
+    # Reply address (agent_id of the requester) — used as the publish filter
+    # for directed delivery
+    reply_to: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
         return _to_camel_dict(asdict(self))

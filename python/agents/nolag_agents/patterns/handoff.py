@@ -60,6 +60,9 @@ class Handoff:
             timeout=timeout,
             metadata=metadata,
             created_by=self._room.agent_id,
+            # Reply address: workers publish the result filter-directed to
+            # this room's results subscription
+            reply_to=self._room.agent_id,
         )
         await self._room.publish_task(envelope)
 
@@ -93,6 +96,8 @@ class Handoff:
                     result_payload,
                     error,
                     self._room.agent_id,
+                    # Direct the result to the dispatcher's filter sub-topic
+                    reply_to=task.reply_to or task.created_by,
                 )
                 await self._room.publish_result(result)
 
@@ -134,4 +139,5 @@ def _dict_to_result(d: dict[str, Any]) -> ResultEnvelope:
         error=d.get("error"),
         completed_at=d.get("completedAt", d.get("completed_at", 0)),
         completed_by=d.get("completedBy", d.get("completed_by")),
+        reply_to=d.get("replyTo", d.get("reply_to")),
     )

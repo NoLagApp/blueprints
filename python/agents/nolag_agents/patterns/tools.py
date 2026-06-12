@@ -44,6 +44,8 @@ class Tools:
         asyncio.ensure_future(self._handle_request(envelope, handler))
 
     async def _handle_request(self, envelope: ToolRequestEnvelope, handler: Callable[..., Any]) -> None:
+        # Direct the response back to the requester's filter sub-topic
+        reply_to = envelope.reply_to or envelope.requested_by
         try:
             result = handler(envelope.arguments)
             if inspect.isawaitable(result):
@@ -54,6 +56,7 @@ class Tools:
                 "success",
                 result,
                 responded_by=self._agent_id,
+                reply_to=reply_to,
             )
             await self._room.publish_tools(response.to_dict())
         except Exception as err:
@@ -64,6 +67,7 @@ class Tools:
                 None,
                 error={"code": "TOOL_ERROR", "message": str(err)},
                 responded_by=self._agent_id,
+                reply_to=reply_to,
             )
             await self._room.publish_tools(response.to_dict())
 
@@ -77,7 +81,13 @@ class Tools:
         *,
         timeout: Optional[int] = None,
     ) -> ToolResponseEnvelope:
-        envelope = create_tool_request(tool_name, args, self._agent_id)
+        # reply_to is the room's agent_id — the filter sub-topic this room's
+        # results subscription listens on. (self._agent_id may differ when a
+        # caller attributes requests to a logical agent; delivery must use
+        # the address that is actually subscribed.)
+        envelope = create_tool_request(
+            tool_name, args, self._agent_id, reply_to=self._room.agent_id,
+        )
         await self._room.publish_tools(envelope.to_dict())
         return await self._correlations.register(envelope.correlation_id, timeout)
 
@@ -109,4 +119,5 @@ def _dict_to_tool_response(d: dict[str, Any]) -> ToolResponseEnvelope:
         error=d.get("error"),
         responded_by=d.get("respondedBy", d.get("responded_by")),
         responded_at=d.get("respondedAt", d.get("responded_at", 0)),
+        reply_to=d.get("replyTo", d.get("reply_to")),
     )

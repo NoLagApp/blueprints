@@ -11,7 +11,7 @@ class TestBlackboard:
         assert len(mock_room_context._published) == 1
         topic, data, opts = mock_room_context._published[0]
         assert topic == "state"
-        assert opts == {"retain": True}
+        assert opts is not None and opts.retain is True
 
     @pytest.mark.asyncio
     async def test_version_increments(self, agent_room, mock_room_context):

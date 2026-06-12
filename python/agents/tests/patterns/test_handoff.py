@@ -113,3 +113,42 @@ class TestHandoff:
     def test_dispose(self, agent_room):
         handoff = Handoff(agent_room)
         handoff.dispose()
+
+
+class TestDirectedResults:
+    """Regression tests for filter-directed task results (v0.3.0)."""
+
+    @pytest.mark.asyncio
+    async def test_dispatch_sets_reply_to(self, agent_room, mock_room_context):
+        from nolag_agents.patterns.handoff import Handoff
+        handoff = Handoff(agent_room)
+        await handoff.dispatch("cap", {"x": 1}, allow_no_workers=True)
+        _, task_data, _ = mock_room_context._published[0]
+        assert task_data["replyTo"] == "test-agent"
+
+    @pytest.mark.asyncio
+    async def test_respond_directs_result_to_dispatcher(self, agent_room, mock_room_context):
+        from nolag_agents.patterns.handoff import Handoff
+        import asyncio as _asyncio
+        handoff = Handoff(agent_room)
+        responded = []
+
+        def _handler(task, respond):
+            responded.append(_asyncio.ensure_future(respond("success", {"ok": True})))
+
+        handoff.on_task("*", _handler)
+        mock_room_context.simulate_message("tasks", {
+            "type": "task",
+            "taskId": "t1",
+            "correlationId": "c1",
+            "capability": "cap",
+            "payload": {},
+            "replyTo": "dispatcher-9",
+            "createdBy": "dispatcher-9",
+        })
+        await _asyncio.sleep(0.05)
+
+        topic, result_data, opts = mock_room_context._published[-1]
+        assert topic == "results"
+        assert result_data["replyTo"] == "dispatcher-9"
+        assert opts is not None and opts.filter == "dispatcher-9"
