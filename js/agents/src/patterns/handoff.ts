@@ -3,6 +3,15 @@ import type { TaskEnvelope, ResultEnvelope } from "../types";
 import { CorrelationManager } from "../correlation";
 import { createTaskEnvelope, createResultEnvelope } from "../envelope";
 
+type TaskHandler = (
+  task: TaskEnvelope,
+  respond: (
+    status: ResultEnvelope["status"],
+    payload: Record<string, unknown>,
+    error?: { code: string; message: string },
+  ) => void,
+) => void;
+
 /**
  * Handoff pattern — dispatch tasks to agents and receive results.
  *
@@ -56,6 +65,10 @@ export class Handoff {
       timeout?: number;
       waitForResult?: boolean;
       metadata?: Record<string, unknown>;
+      /** Attribution override; defaults to the room's agentId */
+      createdBy?: string;
+      /** Reply address override; defaults to the room's agentId (its results filter) */
+      replyTo?: string;
       /** Skip the capability check (dispatch even if no workers are connected) */
       allowNoWorkers?: boolean;
     },
@@ -75,7 +88,10 @@ export class Handoff {
 
     const envelope = createTaskEnvelope(capability, payload, {
       ...options,
-      createdBy: this._room.agentId,
+      createdBy: options?.createdBy ?? this._room.agentId,
+      // Reply address: workers publish the result filter-directed to this
+      // room's results subscription
+      replyTo: options?.replyTo ?? this._room.agentId,
     });
     this._room.publishTask(envelope);
 
@@ -98,17 +114,18 @@ export class Handoff {
    *                       Pass `'*'` to receive all tasks.
    * @param handler - Async handler called with the task and a respond function.
    */
+  onTask(handler: TaskHandler): void;
+  onTask(capabilities: string[] | '*', handler: TaskHandler): void;
   onTask(
-    capabilities: string[] | '*',
-    handler: (
-      task: TaskEnvelope,
-      respond: (
-        status: ResultEnvelope["status"],
-        payload: Record<string, unknown>,
-        error?: { code: string; message: string },
-      ) => void,
-    ) => void,
+    capabilitiesOrHandler: string[] | '*' | TaskHandler,
+    maybeHandler?: TaskHandler,
   ): void {
+    // Single-arg form: onTask(handler) receives all tasks
+    const capabilities: string[] | '*' =
+      typeof capabilitiesOrHandler === "function" ? '*' : capabilitiesOrHandler;
+    const handler: TaskHandler =
+      typeof capabilitiesOrHandler === "function" ? capabilitiesOrHandler : maybeHandler!;
+
     this._room.on("task", (task) => {
       // Filter by capability unless wildcard
       if (capabilities !== '*' && !capabilities.includes(task.capability)) {
@@ -127,6 +144,8 @@ export class Handoff {
           payload,
           error,
           this._room.agentId,
+          // Direct the result to the dispatcher's filter sub-topic
+          task.replyTo ?? task.createdBy,
         );
         this._room.publishResult(result);
       };

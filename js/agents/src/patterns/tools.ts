@@ -33,6 +33,9 @@ export class Tools {
       const handler = this._handlers.get(envelope.toolName);
       if (!handler) return;
 
+      // Direct the response back to the requester's filter sub-topic
+      const replyTo = envelope.replyTo ?? envelope.requestedBy;
+
       try {
         const result = await handler(envelope.arguments);
         const response = createToolResponse(
@@ -42,6 +45,7 @@ export class Tools {
           result,
           undefined,
           this._agentId,
+          replyTo,
         );
         this._room.publishTools(
           response as unknown as Record<string, unknown>,
@@ -57,6 +61,7 @@ export class Tools {
             message: err instanceof Error ? err.message : String(err),
           },
           this._agentId,
+          replyTo,
         );
         this._room.publishTools(
           response as unknown as Record<string, unknown>,
@@ -80,7 +85,13 @@ export class Tools {
     args: Record<string, unknown>,
     options?: { timeout?: number },
   ): Promise<ToolResponseEnvelope> {
-    const envelope = createToolRequest(toolName, args, this._agentId);
+    // replyTo is the room's agentId — the filter sub-topic this room's
+    // results subscription listens on. (this._agentId may differ when a
+    // caller attributes requests to a logical agent; delivery must use the
+    // address that is actually subscribed.)
+    const envelope = createToolRequest(toolName, args, this._agentId, {
+      replyTo: this._room.agentId,
+    });
     this._room.publishTools(
       envelope as unknown as Record<string, unknown>,
     );

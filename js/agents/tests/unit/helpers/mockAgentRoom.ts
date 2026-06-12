@@ -11,14 +11,30 @@ class MockRoomEmitter extends EventEmitter<AgentRoomEvents> {
   }
 }
 
-export function createMockAgentRoom() {
+export function createMockAgentRoom(agents: Array<{ capabilities: string[] }> = [{ capabilities: ["*"] }]) {
   const emitter = new MockRoomEmitter();
   const published: Array<{ method: string; data: unknown; options?: unknown }> = [];
 
+  const connectedAgents = agents.map((a, i) => ({
+    actorId: `actor-${i}`,
+    name: `agent-${i}`,
+    role: "agent",
+    capabilities: a.capabilities,
+    connectedAt: 0,
+  }));
+
   const room = {
     name: "test-room",
+    agentId: "test-agent",
     on: emitter.on.bind(emitter),
     off: emitter.off.bind(emitter),
+    // Presence-based service discovery (used by Handoff.dispatch)
+    getConnectedAgents: () => connectedAgents,
+    findAgents: (capability: string) =>
+      connectedAgents.filter((a) => a.capabilities.includes("*") || a.capabilities.includes(capability)),
+    getAvailableCapabilities: () => [...new Set(connectedAgents.flatMap((a) => a.capabilities))],
+    hasCapability: (capability: string) =>
+      connectedAgents.some((a) => a.capabilities.includes("*") || a.capabilities.includes(capability)),
     publishTask: (d: unknown) => published.push({ method: "publishTask", data: d }),
     publishResult: (d: unknown) => published.push({ method: "publishResult", data: d }),
     publishState: (d: unknown) => published.push({ method: "publishState", data: d }),

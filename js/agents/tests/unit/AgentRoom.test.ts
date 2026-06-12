@@ -9,12 +9,21 @@ function createMockRoomContext() {
       listeners.get(topic)!.push(handler);
     }),
     emit: vi.fn(),
+    subscribe: vi.fn(),
+    setPresence: vi.fn(),
+    fetchPresence: vi.fn().mockResolvedValue([]),
     // Helper to simulate incoming messages
     _trigger(topic: string, data: any) {
       for (const h of listeners.get(topic) ?? []) h(data);
     },
   };
 }
+
+function createMockClient() {
+  return { on: vi.fn(), off: vi.fn() };
+}
+
+const AGENT_ID = "agent-under-test";
 
 describe("AgentRoom", () => {
   let ctx: ReturnType<typeof createMockRoomContext>;
@@ -24,7 +33,28 @@ describe("AgentRoom", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     ctx = createMockRoomContext();
-    room = new AgentRoom("test-room", ctx, log);
+    room = new AgentRoom("test-room", ctx, createMockClient(), log, AGENT_ID);
+  });
+
+  // --- Subscription semantics (load balancing + directed replies) ---
+
+  it("subscribes work-distribution topics with connection-default load balancing", () => {
+    // tasks + tools must NOT force loadBalance off — pools share these one-of-N
+    expect(ctx.subscribe).toHaveBeenCalledWith("tasks");
+    expect(ctx.subscribe).toHaveBeenCalledWith("tools");
+  });
+
+  it("subscribes results with own-agentId filter and loadBalance disabled", () => {
+    expect(ctx.subscribe).toHaveBeenCalledWith("results", {
+      loadBalance: false,
+      filters: [AGENT_ID],
+    });
+  });
+
+  it("subscribes broadcast topics with loadBalance disabled", () => {
+    for (const topic of ["state", "events", "inbox", "approval"]) {
+      expect(ctx.subscribe).toHaveBeenCalledWith(topic, { loadBalance: false });
+    }
   });
 
   // --- Simple topic wiring ---
@@ -93,9 +123,9 @@ describe("AgentRoom", () => {
     expect(reqHandler).not.toHaveBeenCalled();
   });
 
-  // --- Multiplexed: tools ---
+  // --- Multiplexed: tools requests + directed responses ---
 
-  it("emits 'toolRequest' for tool_request type", () => {
+  it("emits 'toolRequest' for tool_request type on tools topic", () => {
     const reqHandler = vi.fn();
     const resHandler = vi.fn();
     room.on("toolRequest", reqHandler);
@@ -106,7 +136,18 @@ describe("AgentRoom", () => {
     expect(resHandler).not.toHaveBeenCalled();
   });
 
-  it("emits 'toolResponse' for tool_response type", () => {
+  it("emits 'toolResponse' for tool_response arriving on results topic (directed reply)", () => {
+    const resultHandler = vi.fn();
+    const resHandler = vi.fn();
+    room.on("result", resultHandler);
+    room.on("toolResponse", resHandler);
+    const data = { type: "tool_response", result: 42, replyTo: AGENT_ID };
+    ctx._trigger("results", data);
+    expect(resHandler).toHaveBeenCalledWith(data);
+    expect(resultHandler).not.toHaveBeenCalled();
+  });
+
+  it("still emits 'toolResponse' for legacy tool_response on tools topic", () => {
     const reqHandler = vi.fn();
     const resHandler = vi.fn();
     room.on("toolRequest", reqHandler);
@@ -121,14 +162,14 @@ describe("AgentRoom", () => {
 
   it("publishTask calls roomContext.emit with tasks topic", () => {
     const envelope = { type: "task" as const, taskId: "t1", correlationId: "c1", capability: "x", priority: "medium" as const, payload: {}, createdAt: Date.now() };
-    room.publishTask(envelope);
-    expect(ctx.emit).toHaveBeenCalledWith("tasks", envelope);
+    room.publishTask(envelope as any);
+    expect(ctx.emit).toHaveBeenCalledWith("tasks", expect.objectContaining({ taskId: "t1" }));
   });
 
   it("publishState calls roomContext.emit with retain option", () => {
     const data = { key: "status", value: "active" };
     room.publishState(data);
-    expect(ctx.emit).toHaveBeenCalledWith("state", data, { retain: true });
+    expect(ctx.emit).toHaveBeenCalledWith("state", expect.objectContaining(data), { retain: true });
   });
 
   it("publishApproval calls roomContext.emit with retain option", () => {
@@ -140,13 +181,37 @@ describe("AgentRoom", () => {
   it("publishEvent calls roomContext.emit without retain", () => {
     const data = { type: "event", category: "log" };
     room.publishEvent(data);
-    expect(ctx.emit).toHaveBeenCalledWith("events", data);
+    expect(ctx.emit).toHaveBeenCalledWith("events", expect.objectContaining(data));
   });
 
-  it("publishTools calls roomContext.emit without retain", () => {
+  it("publishTools sends tool requests on the tools topic", () => {
     const data = { type: "tool_request", toolName: "search" };
     room.publishTools(data);
     expect(ctx.emit).toHaveBeenCalledWith("tools", data);
+  });
+
+  it("publishTools directs tool responses to the requester via results filter", () => {
+    const data = { type: "tool_response", result: 42, replyTo: "requester-1" };
+    room.publishTools(data);
+    expect(ctx.emit).toHaveBeenCalledWith("results", data, { filter: "requester-1" });
+  });
+
+  it("publishTools falls back to tools topic for responses without replyTo (legacy)", () => {
+    const data = { type: "tool_response", result: 42 };
+    room.publishTools(data);
+    expect(ctx.emit).toHaveBeenCalledWith("tools", data);
+  });
+
+  it("publishResult directs results to the dispatcher via filter when replyTo is set", () => {
+    const envelope = { type: "result" as const, taskId: "t1", correlationId: "c1", status: "success" as const, payload: {}, completedAt: Date.now(), replyTo: "dispatcher-1" };
+    room.publishResult(envelope as any);
+    expect(ctx.emit).toHaveBeenCalledWith("results", expect.objectContaining({ taskId: "t1" }), { filter: "dispatcher-1" });
+  });
+
+  it("publishResult publishes unfiltered when replyTo is missing (legacy)", () => {
+    const envelope = { type: "result" as const, taskId: "t1", correlationId: "c1", status: "success" as const, payload: {}, completedAt: Date.now() };
+    room.publishResult(envelope as any);
+    expect(ctx.emit).toHaveBeenCalledWith("results", expect.objectContaining({ taskId: "t1" }));
   });
 
   it("exposes the underlying room context", () => {
@@ -184,7 +249,7 @@ describe("AgentRoom", () => {
 
   it("log is called with 'publish' string on publishTask", () => {
     const envelope = { type: "task" as const, taskId: "t1", correlationId: "c1", capability: "x", priority: "medium" as const, payload: {}, createdAt: Date.now() };
-    room.publishTask(envelope);
+    room.publishTask(envelope as any);
     expect(log).toHaveBeenCalledWith(expect.stringContaining("publish"));
   });
 
@@ -193,22 +258,12 @@ describe("AgentRoom", () => {
     expect(log).toHaveBeenCalledWith(expect.stringContaining("received"));
   });
 
-  // --- publishResult without retain ---
-
-  it("publishResult calls roomContext.emit without retain", () => {
-    const envelope = { type: "result" as const, taskId: "t1", correlationId: "c1", agentId: "a1", status: "success" as const, payload: {}, createdAt: Date.now() };
-    room.publishResult(envelope);
-    expect(ctx.emit).toHaveBeenCalledWith("results", envelope);
-    expect(ctx.emit).not.toHaveBeenCalledWith("results", envelope, expect.anything());
-  });
-
   // --- publishInbox without retain ---
 
   it("publishInbox calls roomContext.emit without retain", () => {
     const data = { messageId: "m1", to: "agent-1", body: "hello" };
     room.publishInbox(data);
     expect(ctx.emit).toHaveBeenCalledWith("inbox", data);
-    expect(ctx.emit).not.toHaveBeenCalledWith("inbox", data, expect.anything());
   });
 
   // --- Approval multiplexing: unknown type defaults to approvalRequest ---

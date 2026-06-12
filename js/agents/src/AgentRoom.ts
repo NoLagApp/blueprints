@@ -161,13 +161,19 @@ export class AgentRoom extends EventEmitter<AgentRoomEvents> {
     this._publish(TOPIC_TASKS, envelope);
   }
 
-  /** Publish to the results topic */
+  /** Publish to the results topic — directed to the dispatcher via filter when replyTo is set */
   publishResult(envelope: ResultEnvelope): void {
     // Auto-set completedBy if not set
     if (!envelope.completedBy) {
       envelope.completedBy = this.agentId;
     }
-    this._publish(TOPIC_RESULTS, envelope);
+    if (envelope.replyTo) {
+      this._publish(TOPIC_RESULTS, envelope, { filter: envelope.replyTo });
+    } else {
+      // Legacy: no reply address — unfiltered publish (only reaches
+      // wildcard subscribers, i.e. pre-0.2.0 SDKs)
+      this._publish(TOPIC_RESULTS, envelope);
+    }
   }
 
   /** Publish to the state topic (retained) */
@@ -193,8 +199,17 @@ export class AgentRoom extends EventEmitter<AgentRoomEvents> {
     this._publish(TOPIC_INBOX, data);
   }
 
-  /** Publish to the tools topic */
+  /**
+   * Publish a tool message.
+   * Requests go to the tools topic (load-balanced one-of-N across server
+   * replicas). Responses are directed to the requester on the results topic
+   * via filter — never load-balanced, never broadcast.
+   */
   publishTools(data: Record<string, unknown>): void {
+    if (data?.type === "tool_response" && typeof data.replyTo === "string" && data.replyTo) {
+      this._publish(TOPIC_RESULTS, data, { filter: data.replyTo });
+      return;
+    }
     this._publish(TOPIC_TOOLS, data);
   }
 
@@ -207,7 +222,7 @@ export class AgentRoom extends EventEmitter<AgentRoomEvents> {
   // INTERNALS
   // ============================================================
 
-  private _publish(topic: string, data: unknown, options?: { retain?: boolean }): void {
+  private _publish(topic: string, data: unknown, options?: { retain?: boolean; filter?: string }): void {
     this._log(`publish to ${topic} in room ${this.name}`);
     if (options) {
       this._roomContext.emit(topic, data, options);
@@ -303,24 +318,36 @@ export class AgentRoom extends EventEmitter<AgentRoomEvents> {
   }
 
   private _wireTopicListeners(): void {
-    // All topics that need broker subscriptions
-    const allTopics = [
-      TOPIC_TASKS,
-      TOPIC_RESULTS,
-      TOPIC_STATE,
-      TOPIC_EVENTS,
-      TOPIC_INBOX,
-      TOPIC_TOOLS,
-      TOPIC_APPROVAL,
-    ];
-    for (const topic of allTopics) {
-      this._roomContext.subscribe(topic);
+    // Work distribution topics honour the connection-level loadBalance
+    // setting, so a pool shares each message one-of-N (no double handling):
+    //  - tasks: each task goes to exactly one worker in the group
+    //  - tools: each tool REQUEST goes to exactly one tool-server replica
+    this._roomContext.subscribe(TOPIC_TASKS);
+    this._roomContext.subscribe(TOPIC_TOOLS);
+
+    // Replies are DIRECTED, not broadcast: the results topic carries task
+    // results and tool responses published with `filter: <recipient agentId>`,
+    // and each agent subscribes only to its own filter sub-topic. The broker
+    // routes each reply straight to the requester — no fan-out waste, and
+    // immune to load-balance groups (a broadcast or LB'd reply could land on
+    // a group member that doesn't hold the pending correlation, timing out
+    // the requester even though the responder did the work).
+    this._roomContext.subscribe(TOPIC_RESULTS, {
+      loadBalance: false,
+      filters: [this.agentId],
+    });
+
+    // Broadcast topics must always fan out, even when the connection enables
+    // loadBalance for work distribution: state/events are broadcasts by
+    // nature; inbox and approval messages are claimed client-side.
+    const broadcastTopics = [TOPIC_STATE, TOPIC_EVENTS, TOPIC_INBOX, TOPIC_APPROVAL];
+    for (const topic of broadcastTopics) {
+      this._roomContext.subscribe(topic, { loadBalance: false });
     }
 
     // Simple 1:1 mappings
     const simpleMap: Array<{ topic: string; event: keyof AgentRoomEvents }> = [
       { topic: TOPIC_TASKS, event: "task" },
-      { topic: TOPIC_RESULTS, event: "result" },
       { topic: TOPIC_STATE, event: "stateChange" },
       { topic: TOPIC_EVENTS, event: "event" },
       { topic: TOPIC_INBOX, event: "inbox" },
@@ -332,6 +359,17 @@ export class AgentRoom extends EventEmitter<AgentRoomEvents> {
       });
     }
 
+    // Multiplexed: results topic carries task results AND tool responses,
+    // both filter-directed to this agent.
+    this._roomContext.on(TOPIC_RESULTS, (data: any) => {
+      this._log(`received ${TOPIC_RESULTS} in room ${this.name}`);
+      if (data?.type === "tool_response") {
+        this.emit("toolResponse", data);
+      } else {
+        this.emit("result", data);
+      }
+    });
+
     // Multiplexed: approval topic carries requests + responses
     this._roomContext.on(TOPIC_APPROVAL, (data: any) => {
       this._log(`received ${TOPIC_APPROVAL} in room ${this.name}`);
@@ -342,7 +380,9 @@ export class AgentRoom extends EventEmitter<AgentRoomEvents> {
       }
     });
 
-    // Multiplexed: tools topic carries requests + responses
+    // Tools topic carries requests; tool_response is still accepted here for
+    // backward compatibility with responders on older SDK versions (their
+    // responses are only reliable when the requester is not load-balanced).
     this._roomContext.on(TOPIC_TOOLS, (data: any) => {
       this._log(`received ${TOPIC_TOOLS} in room ${this.name}`);
       if (data?.type === "tool_response") {

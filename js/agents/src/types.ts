@@ -59,6 +59,8 @@ export interface ResultEnvelope {
   error?: { code: string; message: string };
   completedAt: number;
   completedBy?: string;
+  /** Reply address (agentId of the dispatcher) — used as the publish filter for directed delivery */
+  replyTo?: string;
 }
 
 export interface StateEnvelope {
@@ -122,6 +124,8 @@ export interface ToolResponseEnvelope {
   error?: { code: string; message: string };
   respondedBy?: string;
   respondedAt: number;
+  /** Reply address (agentId of the requester) — used as the publish filter for directed delivery */
+  replyTo?: string;
 }
 
 // ============================================================

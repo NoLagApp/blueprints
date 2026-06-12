@@ -45,6 +45,7 @@ export function createResultEnvelope(
   payload: Record<string, unknown>,
   error?: { code: string; message: string },
   completedBy?: string,
+  replyTo?: string,
 ): ResultEnvelope {
   return {
     type: "result",
@@ -55,6 +56,7 @@ export function createResultEnvelope(
     error,
     completedAt: createTimestamp(),
     completedBy,
+    replyTo,
   };
 }
 
@@ -156,6 +158,7 @@ export function createToolResponse(
   result: unknown,
   error?: { code: string; message: string },
   respondedBy?: string,
+  replyTo?: string,
 ): ToolResponseEnvelope {
   return {
     type: "tool_response",
@@ -166,5 +169,6 @@ export function createToolResponse(
     error,
     respondedBy,
     respondedAt: createTimestamp(),
+    replyTo,
   };
 }
