@@ -52,7 +52,7 @@ class TestAgentRoom:
         presence = AgentPresenceData(name="Test", role="agent", capabilities=["cap1"])
         room = AgentRoom("test", mock_room_context, MockClient(), _noop, "agent-1", presence)
         await room.initialize()
-        assert mock_room_context._presence == {"name": "Test", "role": "agent", "capabilities": ["cap1"]}
+        assert mock_room_context._presence == {"name": "Test", "role": "agent", "capabilities": ["cap1"], "protocol": 2}
 
     def test_emits_task_event(self, agent_room, mock_room_context):
         received = []

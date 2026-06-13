@@ -1,5 +1,7 @@
 """nolag-agents: Multi-agent coordination SDK for NoLag."""
 
+from .errors import IncompatibleProtocolError
+from .constants import AGENTS_PROTOCOL_VERSION
 from .client import NoLagAgents
 from .agent_room import AgentRoom
 from .event_emitter import EventEmitter
@@ -36,6 +38,8 @@ from .types import (
 )
 
 __all__ = [
+    "IncompatibleProtocolError",
+    "AGENTS_PROTOCOL_VERSION",
     "NoLagAgents",
     "AgentRoom",
     "EventEmitter",

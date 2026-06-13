@@ -24,6 +24,8 @@ class AgentPresenceData:
     role: str
     capabilities: list[str] = field(default_factory=list)
     metadata: Optional[dict[str, Any]] = None
+    # Agents-protocol version (auto-injected by the SDK; absent = 1)
+    protocol: Optional[int] = None
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {"name": self.name, "role": self.role}
@@ -31,12 +33,16 @@ class AgentPresenceData:
             d["capabilities"] = self.capabilities
         if self.metadata is not None:
             d["metadata"] = self.metadata
+        if self.protocol is not None:
+            d["protocol"] = self.protocol
         return d
 
 
 @dataclass
 class TaskEnvelope:
     type: Literal["task"] = "task"
+    # Agents-protocol version of the sender (absent = 1, pre-directed-replies)
+    protocol: Optional[int] = None
     task_id: str = ""
     correlation_id: str = ""
     capability: str = ""
@@ -56,6 +62,8 @@ class TaskEnvelope:
 @dataclass
 class ResultEnvelope:
     type: Literal["result"] = "result"
+    # Agents-protocol version of the sender (absent = 1, pre-directed-replies)
+    protocol: Optional[int] = None
     task_id: str = ""
     correlation_id: str = ""
     status: Literal["success", "error", "partial"] = "success"
@@ -74,6 +82,8 @@ class ResultEnvelope:
 @dataclass
 class StateEnvelope:
     type: Literal["state"] = "state"
+    # Agents-protocol version of the sender (absent = 1, pre-directed-replies)
+    protocol: Optional[int] = None
     key: str = ""
     value: Any = None
     version: int = 0
@@ -87,6 +97,8 @@ class StateEnvelope:
 @dataclass
 class EventEnvelope:
     type: Literal["event"] = "event"
+    # Agents-protocol version of the sender (absent = 1, pre-directed-replies)
+    protocol: Optional[int] = None
     event_id: str = ""
     severity: Literal["debug", "info", "warning", "error", "critical"] = "info"
     category: str = ""
@@ -101,6 +113,8 @@ class EventEnvelope:
 @dataclass
 class ApprovalRequestEnvelope:
     type: Literal["approval_request"] = "approval_request"
+    # Agents-protocol version of the sender (absent = 1, pre-directed-replies)
+    protocol: Optional[int] = None
     request_id: str = ""
     correlation_id: str = ""
     action: str = ""
@@ -117,6 +131,8 @@ class ApprovalRequestEnvelope:
 @dataclass
 class ApprovalResponseEnvelope:
     type: Literal["approval_response"] = "approval_response"
+    # Agents-protocol version of the sender (absent = 1, pre-directed-replies)
+    protocol: Optional[int] = None
     request_id: str = ""
     correlation_id: str = ""
     decision: Literal["approved", "rejected", "deferred"] = "approved"
@@ -131,6 +147,8 @@ class ApprovalResponseEnvelope:
 @dataclass
 class ToolRequestEnvelope:
     type: Literal["tool_request"] = "tool_request"
+    # Agents-protocol version of the sender (absent = 1, pre-directed-replies)
+    protocol: Optional[int] = None
     request_id: str = ""
     correlation_id: str = ""
     reply_to: Optional[str] = None
@@ -146,6 +164,8 @@ class ToolRequestEnvelope:
 @dataclass
 class ToolResponseEnvelope:
     type: Literal["tool_response"] = "tool_response"
+    # Agents-protocol version of the sender (absent = 1, pre-directed-replies)
+    protocol: Optional[int] = None
     request_id: str = ""
     correlation_id: str = ""
     status: Literal["success", "error"] = "success"
@@ -166,6 +186,8 @@ class ConnectedAgent:
     actor_id: str = ""
     name: str = ""
     role: str = "agent"
+    # Agents-protocol version the agent advertised (absent presence field = 1)
+    protocol: int = 1
     capabilities: list[str] = field(default_factory=list)
     metadata: Optional[dict[str, Any]] = None
     connected_at: int = 0

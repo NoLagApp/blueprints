@@ -6,6 +6,7 @@ from typing import Any, Callable
 from .event_emitter import EventEmitter
 from .types import AgentPresenceData, ConnectedAgent
 from .constants import (
+    AGENTS_PROTOCOL_VERSION,
     TOPIC_TASKS,
     TOPIC_RESULTS,
     TOPIC_STATE,
@@ -90,6 +91,10 @@ class AgentRoom(EventEmitter):
             await self._room_context.subscribe(topic, SubscribeOptions(load_balance=False))
 
         if self._presence:
+            # Advertise the SDK's protocol version so counterparts can detect
+            # incompatible reply semantics
+            if self._presence.protocol is None:
+                self._presence.protocol = AGENTS_PROTOCOL_VERSION
             self._log(f"setting presence in room {self.name}:", self._presence)
             await self._room_context.set_presence(self._presence.to_dict())
 
@@ -115,6 +120,8 @@ class AgentRoom(EventEmitter):
     # ── Presence ──
 
     async def set_presence(self, data: AgentPresenceData) -> None:
+        if data.protocol is None:
+            data.protocol = AGENTS_PROTOCOL_VERSION
         self._presence = data
         self._log(f"updating presence in room {self.name}")
         await self._room_context.set_presence(data.to_dict())
@@ -209,6 +216,7 @@ class AgentRoom(EventEmitter):
                 capabilities=presence.get("capabilities", []),
                 metadata=presence.get("metadata"),
                 connected_at=actor.get("joined_at") or 0,
+                protocol=presence.get("protocol") if isinstance(presence.get("protocol"), int) else 1,
             )
         # ActorPresence object from SDK
         if hasattr(actor, "actor_token_id"):
@@ -220,6 +228,7 @@ class AgentRoom(EventEmitter):
                 capabilities=p.get("capabilities", []),
                 metadata=p.get("metadata"),
                 connected_at=getattr(actor, "joined_at", 0) or 0,
+                protocol=p.get("protocol") if isinstance(p.get("protocol"), int) else 1,
             )
         return ConnectedAgent()
 
@@ -262,6 +271,7 @@ class AgentRoom(EventEmitter):
                 capabilities=p.get("capabilities", []),
                 metadata=p.get("metadata"),
                 connected_at=0,
+                protocol=p.get("protocol") if isinstance(p.get("protocol"), int) else 1,
             )
             self._agents[actor_id] = agent
             self._log(f"agent joined room {self.name}:", agent.name)
@@ -294,6 +304,7 @@ class AgentRoom(EventEmitter):
                 capabilities=p.get("capabilities") or (existing.capabilities if existing else []),
                 metadata=p.get("metadata") or (existing.metadata if existing else None),
                 connected_at=existing.connected_at if existing else 0,
+                protocol=p.get("protocol") if isinstance(p.get("protocol"), int) else (existing.protocol if existing else 1),
             )
             self._agents[actor_id] = agent
             pdata = AgentPresenceData(

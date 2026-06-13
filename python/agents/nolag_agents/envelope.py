@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+from .constants import AGENTS_PROTOCOL_VERSION
 from .utils import generate_id, create_timestamp
 from .types import (
     TaskEnvelope,
@@ -28,6 +29,7 @@ def create_task_envelope(
 ) -> TaskEnvelope:
     return TaskEnvelope(
         type="task",
+        protocol=AGENTS_PROTOCOL_VERSION,
         task_id=generate_id(),
         correlation_id=generate_id(),
         reply_to=reply_to,
@@ -53,6 +55,7 @@ def create_result_envelope(
 ) -> ResultEnvelope:
     return ResultEnvelope(
         type="result",
+        protocol=AGENTS_PROTOCOL_VERSION,
         task_id=task_id,
         correlation_id=correlation_id,
         status=status,  # type: ignore[arg-type]
@@ -72,6 +75,7 @@ def create_state_envelope(
 ) -> StateEnvelope:
     return StateEnvelope(
         type="state",
+        protocol=AGENTS_PROTOCOL_VERSION,
         key=key,
         value=value,
         version=version,
@@ -88,6 +92,7 @@ def create_event_envelope(
 ) -> EventEnvelope:
     return EventEnvelope(
         type="event",
+        protocol=AGENTS_PROTOCOL_VERSION,
         event_id=generate_id(),
         severity=severity,  # type: ignore[arg-type]
         category=category,
@@ -107,6 +112,7 @@ def create_approval_request(
 ) -> ApprovalRequestEnvelope:
     return ApprovalRequestEnvelope(
         type="approval_request",
+        protocol=AGENTS_PROTOCOL_VERSION,
         request_id=generate_id(),
         correlation_id=generate_id(),
         action=action,
@@ -127,6 +133,7 @@ def create_approval_response(
 ) -> ApprovalResponseEnvelope:
     return ApprovalResponseEnvelope(
         type="approval_response",
+        protocol=AGENTS_PROTOCOL_VERSION,
         request_id=request_id,
         correlation_id=correlation_id,
         decision=decision,  # type: ignore[arg-type]
@@ -145,6 +152,7 @@ def create_tool_request(
 ) -> ToolRequestEnvelope:
     return ToolRequestEnvelope(
         type="tool_request",
+        protocol=AGENTS_PROTOCOL_VERSION,
         request_id=generate_id(),
         correlation_id=generate_id(),
         reply_to=reply_to,
@@ -166,6 +174,7 @@ def create_tool_response(
 ) -> ToolResponseEnvelope:
     return ToolResponseEnvelope(
         type="tool_response",
+        protocol=AGENTS_PROTOCOL_VERSION,
         request_id=request_id,
         correlation_id=correlation_id,
         status=status,  # type: ignore[arg-type]

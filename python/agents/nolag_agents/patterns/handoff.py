@@ -6,6 +6,7 @@ from ..agent_room import AgentRoom
 from ..types import TaskEnvelope, ResultEnvelope, from_camel_dict
 from ..correlation import CorrelationManager
 from ..envelope import create_task_envelope, create_result_envelope
+from ..errors import IncompatibleProtocolError
 
 
 class Handoff:
@@ -18,6 +19,7 @@ class Handoff:
     def __init__(self, room: AgentRoom) -> None:
         self._room = room
         self._correlations: CorrelationManager[ResultEnvelope] = CorrelationManager()
+        self._warned_mixed = False
 
         self._room.on("result", self._on_result)
 
@@ -39,6 +41,7 @@ class Handoff:
         wait_for_result: bool = False,
         metadata: Optional[dict[str, Any]] = None,
         allow_no_workers: bool = False,
+        allow_legacy_responders: bool = False,
     ) -> Optional[ResultEnvelope]:
         if not allow_no_workers:
             capable = self._room.find_agents(capability)
@@ -67,8 +70,36 @@ class Handoff:
         await self._room.publish_task(envelope)
 
         if wait_for_result:
+            # Fail fast when the outcome is deterministic: if capable workers
+            # are visible and ALL advertise agents-protocol < 2, their results
+            # cannot reach this dispatcher's filtered subscription. Mixed
+            # pools proceed with a warning (presence is eventually consistent).
+            capable = self._room.find_agents(capability)
+            if not allow_legacy_responders and capable:
+                modern = [a for a in capable if a.protocol >= 2]
+                if not modern:
+                    raise IncompatibleProtocolError(
+                        f"Task '{capability}' dispatch with wait_for_result",
+                        [(a.name, a.protocol) for a in capable],
+                    )
+                if len(modern) < len(capable) and not self._warned_mixed:
+                    self._warned_mixed = True
+                    import logging
+                    logging.getLogger("nolag_agents").warning(
+                        "Capability '%s' has workers on agents-protocol < 2: %s — "
+                        "their results may not be delivered; upgrade them.",
+                        capability,
+                        ", ".join(a.name for a in capable if a.protocol < 2),
+                    )
+
+            n = len(capable)
             return await self._correlations.register(
-                envelope.correlation_id, timeout
+                envelope.correlation_id,
+                timeout,
+                f"Task '{capability}' dispatch ({n} capable worker{'' if n == 1 else 's'} "
+                f"visible). Likely causes: worker crashed mid-task, worker on "
+                f"agents-protocol < 2 (results not directed), or the room is "
+                f"not deliverable",
             )
         return None
 

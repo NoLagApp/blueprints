@@ -12,7 +12,12 @@ class CorrelationManager(Generic[T]):
     def __init__(self) -> None:
         self._pending: dict[str, _Entry] = {}
 
-    def register(self, correlation_id: str, timeout_ms: int | None = None) -> asyncio.Future[T]:
+    def register(
+        self,
+        correlation_id: str,
+        timeout_ms: int | None = None,
+        context: str | None = None,
+    ) -> asyncio.Future[T]:
         loop = asyncio.get_running_loop()
         future: asyncio.Future[T] = loop.create_future()
         handle: asyncio.TimerHandle | None = None
@@ -21,10 +26,12 @@ class CorrelationManager(Generic[T]):
             def _on_timeout():
                 self._pending.pop(correlation_id, None)
                 if not future.done():
+                    # Context turns an opaque correlation id into an
+                    # actionable error — callers supply what they were
+                    # waiting for and the likely causes.
+                    what = context or f"Correlation {correlation_id}"
                     future.set_exception(
-                        TimeoutError(
-                            f"Correlation {correlation_id} timed out after {timeout_ms}ms"
-                        )
+                        TimeoutError(f"{what} timed out after {timeout_ms}ms")
                     )
             handle = loop.call_later(timeout_ms / 1000.0, _on_timeout)
 

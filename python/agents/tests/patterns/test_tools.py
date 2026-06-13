@@ -196,3 +196,79 @@ class TestDirectedReplies:
         })
         result = await task
         assert result.result == 42
+
+
+class TestNackAndProtocolGate:
+    """Regression tests for NO_HANDLER NACKs and protocol gating (v0.4.0)."""
+
+    @pytest.mark.asyncio
+    async def test_tool_server_nacks_missing_tool(self, agent_room, mock_room_context):
+        server = Tools(agent_room, "server-1")
+        server.register("known", lambda args: 1)
+
+        mock_room_context.simulate_message("tools", {
+            "type": "tool_request",
+            "requestId": "r9",
+            "correlationId": "c9",
+            "replyTo": "requester-9",
+            "toolName": "missing",
+            "arguments": {},
+            "requestedBy": "requester-9",
+            "requestedAt": 1,
+        })
+        await asyncio.sleep(0.05)
+
+        topic, nack, opts = mock_room_context._published[-1]
+        assert topic == "results"  # directed reply path
+        assert nack["status"] == "error"
+        assert nack["error"]["code"] == "NO_HANDLER"
+        assert "missing" in nack["error"]["message"]
+        assert opts is not None and opts.filter == "requester-9"
+
+    @pytest.mark.asyncio
+    async def test_pure_requester_stays_silent(self, agent_room, mock_room_context):
+        Tools(agent_room, "requester-only")
+        mock_room_context.simulate_message("tools", {
+            "type": "tool_request",
+            "requestId": "r9",
+            "correlationId": "c9",
+            "toolName": "anything",
+            "arguments": {},
+            "requestedBy": "other",
+            "requestedAt": 1,
+        })
+        await asyncio.sleep(0.05)
+        assert mock_room_context._published == []
+
+    @pytest.mark.asyncio
+    async def test_invoke_fails_fast_when_all_servers_old(self, agent_room):
+        from nolag_agents.types import ConnectedAgent
+        from nolag_agents.errors import IncompatibleProtocolError
+        agent_room._agents["old-server"] = ConnectedAgent(
+            actor_id="old-server", name="old", role="tool-server",
+            capabilities=[], protocol=1,
+        )
+        tools = Tools(agent_room, "requester")
+        with pytest.raises(IncompatibleProtocolError):
+            await tools.invoke("calc", {}, timeout=50)
+
+    @pytest.mark.asyncio
+    async def test_allow_legacy_responders_bypasses_gate(self, agent_room):
+        from nolag_agents.types import ConnectedAgent
+        agent_room._agents["old-server"] = ConnectedAgent(
+            actor_id="old-server", name="old", role="tool-server",
+            capabilities=[], protocol=1,
+        )
+        tools = Tools(agent_room, "requester")
+        with pytest.raises(TimeoutError, match="timed out"):
+            await tools.invoke("calc", {}, timeout=30, allow_legacy_responders=True)
+
+    @pytest.mark.asyncio
+    async def test_timeout_message_names_tool_room_and_causes(self, agent_room):
+        tools = Tools(agent_room, "requester")
+        with pytest.raises(TimeoutError) as exc:
+            await tools.invoke("calc", {}, timeout=30)
+        msg = str(exc.value)
+        assert "Tool 'calc' invocation" in msg
+        assert "test-room" in msg
+        assert "Likely causes" in msg

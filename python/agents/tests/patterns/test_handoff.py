@@ -24,7 +24,7 @@ class TestHandoff:
     @pytest.mark.asyncio
     async def test_dispatch_with_capable_agent(self, agent_room, mock_room_context):
         agent_room._agents["worker"] = ConnectedAgent(
-            actor_id="worker", name="W", role="agent", capabilities=["summarize"]
+            actor_id="worker", name="W", role="agent", capabilities=["summarize"], protocol=2
         )
         handoff = Handoff(agent_room)
         await handoff.dispatch("summarize", {"text": "hi"})
@@ -33,7 +33,7 @@ class TestHandoff:
     @pytest.mark.asyncio
     async def test_dispatch_wait_for_result(self, agent_room, mock_room_context):
         agent_room._agents["worker"] = ConnectedAgent(
-            actor_id="worker", name="W", role="agent", capabilities=["summarize"]
+            actor_id="worker", name="W", role="agent", capabilities=["summarize"], protocol=2
         )
         handoff = Handoff(agent_room)
 
