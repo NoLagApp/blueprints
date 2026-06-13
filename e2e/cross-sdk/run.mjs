@@ -166,6 +166,22 @@ try {
     check("py.double task result delivered to JS dispatcher", false, err.message);
   }
 
+  // (still Phase 1) JS -> PY unknown tool in the python namespace -> fast NACK
+  {
+    const t0 = Date.now();
+    try {
+      const res = await memberA.tools.invoke("py.does_not_exist", {}, { timeout: 10_000 });
+      const elapsed = Date.now() - t0;
+      check(
+        "JS->PY unknown tool gets a fast NO_HANDLER NACK",
+        res.status === "error" && res.error?.code === "NO_HANDLER" && elapsed < 5000,
+        `status=${res.status} code=${res.error?.code} ${elapsed}ms`,
+      );
+    } catch (err) {
+      check("JS->PY unknown tool gets a fast NO_HANDLER NACK", false, err.message);
+    }
+  }
+
   // ── Phase 2: Python requester -> JS responders ───────────────
   console.log("\n[e2e] Phase 2: Python -> JS (load-balanced pool)");
   py.stdin.write("GO\n");
@@ -176,7 +192,59 @@ try {
     "js.double task result delivered to Python dispatcher",
     pyEvents.some((e) => e.event === "task_ok" && e.doubled === 68),
   );
+  check(
+    "PY->JS unknown tool gets a fast NO_HANDLER NACK",
+    pyEvents.some((e) => e.event === "nack_ok"),
+    JSON.stringify(pyEvents.find((e) => e.event === "nack_fail") ?? "no nack event"),
+  );
   check("python side reports overall ok", done.ok === true);
+
+  // ── Phase 3: loud failures ───────────────────────────────────
+  console.log("\n[e2e] Phase 3: loud failures");
+
+  // (b) unencodable payload throws synchronously with the topic named
+  {
+    const room = memberA.client.room(ROOM);
+    const circular = {}; circular.self = circular;
+    let threw = null;
+    memberA.client.rooms?.get?.(ROOM); // noop guard
+    try {
+      room.context.emit("events", circular);
+    } catch (err) {
+      threw = err;
+    }
+    check(
+      "unencodable payload throws synchronously naming the topic",
+      threw !== null && threw.name === "NoLagEncodeError" && threw.message.includes("events"),
+      threw ? `${threw.name}: ${threw.message.slice(0, 80)}` : "did not throw",
+    );
+  }
+
+  // (c) responder advertising agents-protocol 1 -> fail fast, no timeout burned
+  {
+    const oldAgent = new NoLagAgents(TOKEN, {
+      appName: APP_NAME,
+      agentId: "legacy-sim-1",
+      rooms: [ROOM],
+      presence: { name: "legacy-sim-1", role: "agent", capabilities: ["legacy.work"], protocol: 1 },
+    });
+    await oldAgent.connect();
+    await new Promise((r) => setTimeout(r, 2500)); // presence propagation
+
+    const t0 = Date.now();
+    try {
+      await memberA.handoff.dispatch("legacy.work", {}, { waitForResult: true, timeout: 20_000 });
+      check("dispatch to all-legacy workers fails fast", false, "resolved unexpectedly");
+    } catch (err) {
+      const elapsed = Date.now() - t0;
+      check(
+        "dispatch to all-legacy workers fails fast with IncompatibleProtocolError",
+        err.name === "IncompatibleProtocolError" && elapsed < 5000,
+        `${err.name} after ${elapsed}ms`,
+      );
+    }
+    oldAgent.disconnect();
+  }
 
   exitCode = failures.length === 0 ? 0 : 1;
 } catch (err) {

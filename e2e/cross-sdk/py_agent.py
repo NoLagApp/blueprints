@@ -86,6 +86,23 @@ async def main() -> None:
             ok = False
             emit("tool_fail", i=i, error=str(err))
 
+    # NO_HANDLER NACK: js workers serve the 'js.' namespace, so an unknown
+    # js.* tool must come back as a fast NACK, not a timeout
+    import time
+    t0 = time.monotonic()
+    try:
+        res = await tools.invoke("js.does_not_exist", {}, timeout=10000)
+        elapsed = time.monotonic() - t0
+        err = res.error or {}
+        if res.status == "error" and err.get("code") == "NO_HANDLER" and elapsed < 5.0:
+            emit("nack_ok", elapsed=round(elapsed, 2))
+        else:
+            ok = False
+            emit("nack_fail", status=res.status, error=err, elapsed=round(elapsed, 2))
+    except Exception as err:  # noqa: BLE001
+        ok = False
+        emit("nack_fail", error=str(err), elapsed=round(time.monotonic() - t0, 2))
+
     try:
         result = await handoff.dispatch(
             "js.double", {"x": 34},
