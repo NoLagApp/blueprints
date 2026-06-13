@@ -10,6 +10,7 @@ on:
         type: choice
         options:
           - all
+          - agents
           - chat
           - notify
           - signal
@@ -61,7 +62,7 @@ jobs:
           fi
 
           if [ "$SDK" = "all" ]; then
-            echo "packages=chat notify signal stream feed dash track sync queue iot collab" >> "$GITHUB_OUTPUT"
+            echo "packages=agents chat notify signal stream feed dash track sync queue iot collab" >> "$GITHUB_OUTPUT"
           else
             echo "packages=$SDK" >> "$GITHUB_OUTPUT"
           fi
