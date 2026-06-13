@@ -101,6 +101,17 @@ and the likely causes (responder offline, responder pre-protocol-2, room
 not deliverable). An opaque "correlation timed out" is a protocol-conformance
 bug.
 
+## Rooms must exist before use
+
+The broker never creates a room implicitly when an agent subscribes or
+publishes — an unknown room is a loud error (`42940`/`not_authorized`),
+surfaced on the SDK callback. Per-entity rooms (per-matter, per-device) are
+provisioned explicitly by the creating service at entity-creation time via
+the control-plane rooms API (`NoLagApi.rooms.ensure`), gated by the app's
+`config.autoProvisionRooms` flag. Agents and workers simply join; a divergent
+or typo'd room id therefore fails loudly instead of silently splitting into an
+empty room.
+
 ## Conformance
 
 Run the cross-SDK e2e against a configured room on a real broker:
