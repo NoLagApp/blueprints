@@ -1,5 +1,7 @@
 # nolag-agents
 
+> Protocol contract (topics, directed replies, NACKs, version advertisement): [docs/AGENTS-PROTOCOL.md](../../docs/AGENTS-PROTOCOL.md)
+
 Multi-agent coordination SDK for Python, built on the [nolag](https://pypi.org/project/nolag/) real-time SDK.
 
 Six coordination patterns out of the box: **Handoff**, **Blackboard**, **Inbox**, **Tools**, **Approve**, and **Observe**. Plus built-in load balancing for worker pools.

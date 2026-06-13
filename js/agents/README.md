@@ -1,5 +1,7 @@
 # @nolag/agents
 
+> Protocol contract (topics, directed replies, NACKs, version advertisement): [docs/AGENTS-PROTOCOL.md](../../docs/AGENTS-PROTOCOL.md)
+
 Multi-agent coordination SDK for [NoLag](https://nolag.app) — dispatch tasks, share state, observe decisions, gate actions with human approval, and invoke remote tools across connected agents.
 
 ## How It Works with NoLag
