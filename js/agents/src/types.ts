@@ -37,6 +37,8 @@ export interface ResolvedAgentsOptions {
 
 export interface TaskEnvelope {
   type: "task";
+  /** Agents-protocol version of the sender (absent = 1, pre-directed-replies) */
+  protocol?: number;
   taskId: string;
   correlationId: string;
   replyTo?: string;
@@ -52,6 +54,8 @@ export interface TaskEnvelope {
 
 export interface ResultEnvelope {
   type: "result";
+  /** Agents-protocol version of the sender (absent = 1, pre-directed-replies) */
+  protocol?: number;
   taskId: string;
   correlationId: string;
   status: "success" | "error" | "partial";
@@ -65,6 +69,8 @@ export interface ResultEnvelope {
 
 export interface StateEnvelope {
   type: "state";
+  /** Agents-protocol version of the sender (absent = 1, pre-directed-replies) */
+  protocol?: number;
   key: string;
   value: unknown;
   version: number;
@@ -74,6 +80,8 @@ export interface StateEnvelope {
 
 export interface EventEnvelope {
   type: "event";
+  /** Agents-protocol version of the sender (absent = 1, pre-directed-replies) */
+  protocol?: number;
   eventId: string;
   severity: "debug" | "info" | "warning" | "error" | "critical";
   category: string;
@@ -84,6 +92,8 @@ export interface EventEnvelope {
 
 export interface ApprovalRequestEnvelope {
   type: "approval_request";
+  /** Agents-protocol version of the sender (absent = 1, pre-directed-replies) */
+  protocol?: number;
   requestId: string;
   correlationId: string;
   action: string;
@@ -96,6 +106,8 @@ export interface ApprovalRequestEnvelope {
 
 export interface ApprovalResponseEnvelope {
   type: "approval_response";
+  /** Agents-protocol version of the sender (absent = 1, pre-directed-replies) */
+  protocol?: number;
   requestId: string;
   correlationId: string;
   decision: "approved" | "rejected" | "deferred";
@@ -106,6 +118,8 @@ export interface ApprovalResponseEnvelope {
 
 export interface ToolRequestEnvelope {
   type: "tool_request";
+  /** Agents-protocol version of the sender (absent = 1, pre-directed-replies) */
+  protocol?: number;
   requestId: string;
   correlationId: string;
   replyTo?: string;
@@ -117,6 +131,8 @@ export interface ToolRequestEnvelope {
 
 export interface ToolResponseEnvelope {
   type: "tool_response";
+  /** Agents-protocol version of the sender (absent = 1, pre-directed-replies) */
+  protocol?: number;
   requestId: string;
   correlationId: string;
   status: "success" | "error";
@@ -137,6 +153,8 @@ export interface AgentPresenceData {
   name: string;
   /** Agent role: orchestrator, agent, observer, human, tool-server */
   role: string;
+  /** Agents-protocol version (auto-injected by the SDK; absent = 1) */
+  protocol?: number;
   /** Agent capabilities (for task routing) */
   capabilities?: string[];
   /** Custom metadata */

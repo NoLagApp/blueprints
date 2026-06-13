@@ -16,18 +16,17 @@ export class CorrelationManager<T = unknown> {
    * Register a pending correlation. Returns a promise that resolves
    * when `resolve()` is called with the matching correlationId.
    */
-  register(correlationId: string, timeoutMs?: number): Promise<T> {
+  register(correlationId: string, timeoutMs?: number, context?: string): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       let timer: ReturnType<typeof setTimeout> | null = null;
 
       if (timeoutMs && timeoutMs > 0) {
         timer = setTimeout(() => {
           this._pending.delete(correlationId);
-          reject(
-            new Error(
-              `Correlation ${correlationId} timed out after ${timeoutMs}ms`,
-            ),
-          );
+          // Context turns an opaque correlation id into an actionable error —
+          // callers supply what they were waiting for and the likely causes.
+          const what = context ?? `Correlation ${correlationId}`;
+          reject(new Error(`${what} timed out after ${timeoutMs}ms`));
         }, timeoutMs);
       }
 

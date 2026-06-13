@@ -27,3 +27,8 @@ export const DEFAULT_ROOM = "default-workflow";
 
 /** Lobby for agent activity observation */
 export const LOBBY_AGENT_ACTIVITY = "agent-activity";
+
+/** Agents-protocol version: 2 = directed replies (filter-routed results),
+ *  NO_HANDLER NACKs, presence protocol advertisement. Absent/1 = legacy
+ *  broadcast replies (pre-0.2.0 SDKs). */
+export const AGENTS_PROTOCOL_VERSION = 2;

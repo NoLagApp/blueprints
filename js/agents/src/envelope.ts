@@ -1,4 +1,5 @@
 import { generateId, createTimestamp } from "./utils";
+import { AGENTS_PROTOCOL_VERSION } from "./constants";
 import type {
   TaskEnvelope,
   ResultEnvelope,
@@ -24,6 +25,7 @@ export function createTaskEnvelope(
 ): TaskEnvelope {
   return {
     type: "task",
+    protocol: AGENTS_PROTOCOL_VERSION,
     taskId: generateId(),
     correlationId: generateId(),
     replyTo: options?.replyTo,
@@ -49,6 +51,7 @@ export function createResultEnvelope(
 ): ResultEnvelope {
   return {
     type: "result",
+    protocol: AGENTS_PROTOCOL_VERSION,
     correlationId,
     taskId,
     status,
@@ -68,6 +71,7 @@ export function createStateEnvelope(
 ): StateEnvelope {
   return {
     type: "state",
+    protocol: AGENTS_PROTOCOL_VERSION,
     key,
     value,
     version,
@@ -84,6 +88,7 @@ export function createEventEnvelope(
 ): EventEnvelope {
   return {
     type: "event",
+    protocol: AGENTS_PROTOCOL_VERSION,
     eventId: generateId(),
     severity,
     category,
@@ -104,6 +109,7 @@ export function createApprovalRequest(
 ): ApprovalRequestEnvelope {
   return {
     type: "approval_request",
+    protocol: AGENTS_PROTOCOL_VERSION,
     requestId: generateId(),
     correlationId: generateId(),
     action,
@@ -124,6 +130,7 @@ export function createApprovalResponse(
 ): ApprovalResponseEnvelope {
   return {
     type: "approval_response",
+    protocol: AGENTS_PROTOCOL_VERSION,
     requestId,
     correlationId,
     decision,
@@ -141,6 +148,7 @@ export function createToolRequest(
 ): ToolRequestEnvelope {
   return {
     type: "tool_request",
+    protocol: AGENTS_PROTOCOL_VERSION,
     requestId: generateId(),
     correlationId: generateId(),
     replyTo: options?.replyTo,
@@ -162,6 +170,7 @@ export function createToolResponse(
 ): ToolResponseEnvelope {
   return {
     type: "tool_response",
+    protocol: AGENTS_PROTOCOL_VERSION,
     requestId,
     correlationId,
     status,

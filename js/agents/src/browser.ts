@@ -6,6 +6,8 @@
 export { NoLagAgents } from "./NoLagAgents";
 export { AgentRoom } from "./AgentRoom";
 export { EventEmitter } from "./EventEmitter";
+export { IncompatibleProtocolError } from "./errors";
+export { AGENTS_PROTOCOL_VERSION } from "./constants";
 export { CorrelationManager } from "./correlation";
 
 // Patterns

@@ -360,3 +360,82 @@ describe("Tools pattern", () => {
     expect(response.result).toEqual({ new: true });
   });
 });
+
+describe("NO_HANDLER NACK and protocol gating (v0.3.0)", () => {
+  let room: ReturnType<typeof createMockAgentRoom>;
+
+  beforeEach(() => {
+    room = createMockAgentRoom();
+  });
+
+  it("a tool server NACKs requests for tools it does not host", async () => {
+    const server = new Tools(room, "server-1");
+    server.register("known", () => 1);
+
+    room.simulate("toolRequest", {
+      type: "tool_request",
+      requestId: "r9",
+      correlationId: "c9",
+      replyTo: "requester-9",
+      toolName: "missing",
+      arguments: {},
+      requestedBy: "requester-9",
+      requestedAt: Date.now(),
+    } as ToolRequestEnvelope);
+    await new Promise((r) => setTimeout(r, 10));
+
+    const published = room.getPublished();
+    expect(published).toHaveLength(1);
+    const nack = published[0].data as ToolResponseEnvelope;
+    expect(nack.status).toBe("error");
+    expect(nack.error?.code).toBe("NO_HANDLER");
+    expect(nack.error?.message).toContain("missing");
+    expect(nack.replyTo).toBe("requester-9");
+  });
+
+  it("a pure requester (no handlers) stays silent on foreign requests", async () => {
+    new Tools(room, "requester-only");
+    room.simulate("toolRequest", {
+      type: "tool_request",
+      requestId: "r9",
+      correlationId: "c9",
+      toolName: "anything",
+      arguments: {},
+      requestedBy: "other",
+      requestedAt: Date.now(),
+    } as ToolRequestEnvelope);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(room.getPublished()).toHaveLength(0);
+  });
+
+  it("invoke fails fast when ALL visible tool servers are pre-protocol-2", async () => {
+    const oldServers = createMockAgentRoom([{ capabilities: [], protocol: 1 }]);
+    oldServers.getConnectedAgents().forEach((a: any) => (a.role = "tool-server"));
+    const tools = new Tools(oldServers, "requester");
+    await expect(tools.invoke("calc", {}, { timeout: 50 })).rejects.toThrowError(
+      /agents-protocol < 2/,
+    );
+  });
+
+  it("invoke proceeds with allowLegacyResponders against old servers", async () => {
+    const oldServers = createMockAgentRoom([{ capabilities: [], protocol: 1 }]);
+    oldServers.getConnectedAgents().forEach((a: any) => (a.role = "tool-server"));
+    const tools = new Tools(oldServers, "requester");
+    await expect(
+      tools.invoke("calc", {}, { timeout: 30, allowLegacyResponders: true }),
+    ).rejects.toThrowError(/timed out/);
+  });
+
+  it("timeout errors name the tool, room, and likely causes", async () => {
+    const tools = new Tools(room, "requester");
+    try {
+      await tools.invoke("calc", {}, { timeout: 30 });
+      expect.unreachable();
+    } catch (e) {
+      const msg = (e as Error).message;
+      expect(msg).toContain("Tool 'calc' invocation");
+      expect(msg).toContain("test-room");
+      expect(msg).toContain("Likely causes");
+    }
+  });
+});

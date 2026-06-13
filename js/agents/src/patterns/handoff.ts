@@ -2,6 +2,7 @@ import type { AgentRoom } from "../AgentRoom";
 import type { TaskEnvelope, ResultEnvelope } from "../types";
 import { CorrelationManager } from "../correlation";
 import { createTaskEnvelope, createResultEnvelope } from "../envelope";
+import { IncompatibleProtocolError } from "../errors";
 
 type TaskHandler = (
   task: TaskEnvelope,
@@ -39,6 +40,7 @@ type TaskHandler = (
 export class Handoff {
   private _room: AgentRoom;
   private _correlations = new CorrelationManager<ResultEnvelope>();
+  private _warnedMixed = false;
 
   constructor(room: AgentRoom) {
     this._room = room;
@@ -71,6 +73,8 @@ export class Handoff {
       replyTo?: string;
       /** Skip the capability check (dispatch even if no workers are connected) */
       allowNoWorkers?: boolean;
+      /** Skip the protocol fail-fast (responders on 0.2.x have directed replies but don't advertise protocol yet) */
+      allowLegacyResponders?: boolean;
     },
   ): Promise<ResultEnvelope | void> {
     // Service discovery: check if any agent can handle this capability
@@ -96,9 +100,35 @@ export class Handoff {
     this._room.publishTask(envelope);
 
     if (options?.waitForResult) {
+      // Fail fast when the outcome is deterministic: if capable workers are
+      // visible and ALL advertise agents-protocol < 2, their results cannot
+      // reach this dispatcher's filtered subscription. Mixed pools proceed
+      // with a warning (presence is eventually consistent).
+      const capable = this._room.findAgents(capability);
+      if (!options?.allowLegacyResponders && capable.length > 0) {
+        const modern = capable.filter((a) => a.protocol >= 2);
+        if (modern.length === 0) {
+          throw new IncompatibleProtocolError(
+            `Task '${capability}' dispatch with waitForResult`,
+            capable.map((a) => ({ name: a.name, protocol: a.protocol })),
+          );
+        }
+        if (modern.length < capable.length && !this._warnedMixed) {
+          this._warnedMixed = true;
+          console.warn(
+            `[nolag-agents] Capability '${capability}' has workers on agents-protocol < 2: ` +
+              capable.filter((a) => a.protocol < 2).map((a) => a.name).join(", ") +
+              ". Their results may not be delivered — upgrade them.",
+          );
+        }
+      }
+
       return this._correlations.register(
         envelope.correlationId,
         options.timeout,
+        `Task '${capability}' dispatch (${capable.length} capable worker${capable.length === 1 ? "" : "s"} visible). ` +
+          `Likely causes: worker crashed mid-task, worker on agents-protocol < 2 ` +
+          `(results not directed), or the room is not deliverable`,
       );
     }
   }

@@ -11,7 +11,7 @@ class MockRoomEmitter extends EventEmitter<AgentRoomEvents> {
   }
 }
 
-export function createMockAgentRoom(agents: Array<{ capabilities: string[] }> = [{ capabilities: ["*"] }]) {
+export function createMockAgentRoom(agents: Array<{ capabilities: string[]; protocol?: number }> = [{ capabilities: ["*"] }]) {
   const emitter = new MockRoomEmitter();
   const published: Array<{ method: string; data: unknown; options?: unknown }> = [];
 
@@ -21,6 +21,7 @@ export function createMockAgentRoom(agents: Array<{ capabilities: string[] }> = 
     role: "agent",
     capabilities: a.capabilities,
     connectedAt: 0,
+    protocol: a.protocol ?? 2,
   }));
 
   const room = {

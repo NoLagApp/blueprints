@@ -1,6 +1,7 @@
 import { EventEmitter } from "./EventEmitter";
 import type { AgentRoomEvents, TaskEnvelope, ResultEnvelope, AgentPresenceData } from "./types";
 import {
+  AGENTS_PROTOCOL_VERSION,
   TOPIC_TASKS,
   TOPIC_RESULTS,
   TOPIC_STATE,
@@ -20,6 +21,8 @@ export interface ConnectedAgent {
   capabilities: string[];
   metadata?: Record<string, unknown>;
   connectedAt: number;
+  /** Agents-protocol version the agent advertised (absent presence field = 1) */
+  protocol: number;
 }
 
 /**
@@ -69,10 +72,13 @@ export class AgentRoom extends EventEmitter<AgentRoomEvents> {
     this._wireTopicListeners();
     this._wirePresenceListeners();
 
-    // Set presence if provided
+    // Set presence if provided (with the SDK's protocol version advertised
+    // so counterparts can detect incompatible reply semantics)
     if (presence) {
-      this._log(`setting presence in room ${name}:`, presence);
-      this._roomContext.setPresence(presence);
+      const withProtocol = { protocol: AGENTS_PROTOCOL_VERSION, ...presence };
+      this._presence = withProtocol;
+      this._log(`setting presence in room ${name}:`, withProtocol);
+      this._roomContext.setPresence(withProtocol);
     }
 
     // Fetch initial presence snapshot
@@ -115,11 +121,12 @@ export class AgentRoom extends EventEmitter<AgentRoomEvents> {
   // PRESENCE
   // ============================================================
 
-  /** Update this agent's presence data */
+  /** Update this agent's presence data (protocol version auto-injected) */
   setPresence(data: AgentPresenceData): void {
-    this._presence = data;
+    const withProtocol = { protocol: AGENTS_PROTOCOL_VERSION, ...data };
+    this._presence = withProtocol;
     this._log(`updating presence in room ${this.name}`);
-    this._roomContext.setPresence(data);
+    this._roomContext.setPresence(withProtocol);
   }
 
   /** Fetch current presence snapshot for this room */
@@ -240,6 +247,7 @@ export class AgentRoom extends EventEmitter<AgentRoomEvents> {
       capabilities: presence.capabilities || [],
       metadata: presence.metadata,
       connectedAt: actor.joinedAt || Date.now(),
+      protocol: typeof presence.protocol === 'number' ? presence.protocol : 1,
     };
   }
 
@@ -276,6 +284,7 @@ export class AgentRoom extends EventEmitter<AgentRoomEvents> {
             capabilities: data.capabilities || [],
             metadata: data.metadata,
             connectedAt: Date.now(),
+            protocol: typeof data.protocol === 'number' ? data.protocol : 1,
           };
           this._agents.set(id, agent);
           this._log(`agent joined room ${this.name}:`, agent.name, agent.capabilities);
@@ -309,6 +318,7 @@ export class AgentRoom extends EventEmitter<AgentRoomEvents> {
             capabilities: data.capabilities || existing?.capabilities || [],
             metadata: data.metadata || existing?.metadata,
             connectedAt: existing?.connectedAt || Date.now(),
+            protocol: typeof data.protocol === 'number' ? data.protocol : (existing?.protocol ?? 1),
           };
           this._agents.set(id, agent);
           this.emit('presenceUpdate', id, data);

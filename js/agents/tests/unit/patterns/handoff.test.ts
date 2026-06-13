@@ -292,3 +292,34 @@ describe("Handoff pattern", () => {
     expect(handler2.mock.calls[0][0]).toEqual(task);
   });
 });
+
+describe("protocol gating on waitForResult (v0.3.0)", () => {
+  it("fails fast when ALL capable workers are pre-protocol-2", async () => {
+    const oldRoom = createMockAgentRoom([{ capabilities: ["review"], protocol: 1 }]);
+    const h = new Handoff(oldRoom);
+    await expect(
+      h.dispatch("review", {}, { waitForResult: true, timeout: 50 }),
+    ).rejects.toThrowError(/agents-protocol < 2/);
+  });
+
+  it("proceeds with allowLegacyResponders", async () => {
+    const oldRoom = createMockAgentRoom([{ capabilities: ["review"], protocol: 1 }]);
+    const h = new Handoff(oldRoom);
+    await expect(
+      h.dispatch("review", {}, { waitForResult: true, timeout: 30, allowLegacyResponders: true }),
+    ).rejects.toThrowError(/timed out/);
+  });
+
+  it("timeout errors name the capability and worker count", async () => {
+    const r = createMockAgentRoom([{ capabilities: ["review"] }]);
+    const h = new Handoff(r);
+    try {
+      await h.dispatch("review", {}, { waitForResult: true, timeout: 30 });
+      expect.unreachable();
+    } catch (e) {
+      const msg = (e as Error).message;
+      expect(msg).toContain("Task 'review' dispatch");
+      expect(msg).toContain("1 capable worker");
+    }
+  });
+});
