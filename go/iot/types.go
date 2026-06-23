@@ -28,6 +28,11 @@ type Device struct {
 	Metadata     map[string]any         `json:"metadata,omitempty"`
 	JoinedAt     int64                  `json:"joinedAt"`
 	IsLocal      bool                   `json:"isLocal"`
+	// Persistent Presence: a sleeping device stays discoverable + wakeable.
+	Persistent bool        `json:"persistent,omitempty"`
+	Wake       *WakeConfig `json:"wake,omitempty"`
+	// Status is the lifecycle of a persistent record on discovery.
+	Status string `json:"status,omitempty"`
 }
 
 // TelemetryReading represents a single sensor reading.
@@ -63,6 +68,21 @@ type IoTPresenceData struct {
 	DeviceName string         `json:"deviceName,omitempty"`
 	Role       DeviceRole     `json:"role"`
 	Metadata   map[string]any `json:"metadata,omitempty"`
+	// Persistent Presence: keep a durable, discoverable, wakeable record while
+	// the device is asleep/disconnected. A sleeping device is a prime case.
+	Persistent bool            `json:"persistent,omitempty"`
+	Wake       *WakeConfig     `json:"wake,omitempty"`
+	// Status is the lifecycle of a persistent record (online|offline|waking);
+	// populated on discovery, empty when advertising.
+	Status string `json:"status,omitempty"`
+}
+
+// WakeConfig is where NoLag fires the HMAC-signed wake webhook to bring a
+// persistent-but-offline device back online when a message is routed to it.
+type WakeConfig struct {
+	URL       string `json:"url"`
+	TimeoutMs int    `json:"timeoutMs,omitempty"`
+	Enabled   bool   `json:"enabled,omitempty"`
 }
 
 // SendTelemetryOptions are options for sending telemetry.

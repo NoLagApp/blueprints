@@ -217,6 +217,7 @@ class AgentRoom(EventEmitter):
                 metadata=presence.get("metadata"),
                 connected_at=actor.get("joined_at") or 0,
                 protocol=presence.get("protocol") if isinstance(presence.get("protocol"), int) else 1,
+                status=actor.get("status"),
             )
         # ActorPresence object from SDK
         if hasattr(actor, "actor_token_id"):
@@ -229,6 +230,7 @@ class AgentRoom(EventEmitter):
                 metadata=p.get("metadata"),
                 connected_at=getattr(actor, "joined_at", 0) or 0,
                 protocol=p.get("protocol") if isinstance(p.get("protocol"), int) else 1,
+                status=getattr(actor, "status", None),
             )
         return ConnectedAgent()
 

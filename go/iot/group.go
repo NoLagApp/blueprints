@@ -74,12 +74,23 @@ func (g *DeviceGroup) subscribe() error {
 	}
 
 	// Set presence
-	g.room.SetPresence(map[string]any{
+	presence := map[string]any{
 		"deviceId":   g.iot.localDevice.DeviceID,
 		"deviceName": g.iot.localDevice.DeviceName,
 		"role":       string(g.iot.localDevice.Role),
 		"metadata":   g.iot.localDevice.Metadata,
-	})
+	}
+	// Persistent Presence: advertise durable + wakeable mode (sleeping devices).
+	if g.iot.localDevice.Persistent {
+		presence["persistent"] = true
+		if g.iot.localDevice.Wake != nil {
+			presence["wake"] = map[string]any{
+				"url":       g.iot.localDevice.Wake.URL,
+				"timeoutMs": g.iot.localDevice.Wake.TimeoutMs,
+			}
+		}
+	}
+	g.room.SetPresence(presence)
 
 	return nil
 }
@@ -259,12 +270,20 @@ func parsePresenceData(m map[string]any) *IoTPresenceData {
 		DeviceID:   stringVal(m, "deviceId"),
 		DeviceName: stringVal(m, "deviceName"),
 		Role:       DeviceRole(stringVal(m, "role")),
+		// Persistent Presence: status (online|offline|waking) on discovery.
+		Status: stringVal(m, "status"),
 	}
 	if data.DeviceID == "" {
 		return nil
 	}
 	if meta, ok := m["metadata"].(map[string]any); ok {
 		data.Metadata = meta
+	}
+	if p, ok := m["persistent"].(bool); ok {
+		data.Persistent = p
+	}
+	if w, ok := m["wake"].(map[string]any); ok {
+		data.Wake = &WakeConfig{URL: stringVal(w, "url")}
 	}
 	return data
 }

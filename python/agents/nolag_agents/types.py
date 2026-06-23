@@ -26,6 +26,10 @@ class AgentPresenceData:
     metadata: Optional[dict[str, Any]] = None
     # Agents-protocol version (auto-injected by the SDK; absent = 1)
     protocol: Optional[int] = None
+    # Persistent Presence: keep a durable, discoverable, wakeable record while
+    # disconnected (e.g. scaled to zero). `wake` = {"url", "timeoutMs"?, "enabled"?}.
+    persistent: Optional[bool] = None
+    wake: Optional[dict[str, Any]] = None
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {"name": self.name, "role": self.role}
@@ -35,6 +39,10 @@ class AgentPresenceData:
             d["metadata"] = self.metadata
         if self.protocol is not None:
             d["protocol"] = self.protocol
+        if self.persistent is not None:
+            d["persistent"] = self.persistent
+        if self.wake is not None:
+            d["wake"] = self.wake
         return d
 
 
@@ -191,6 +199,9 @@ class ConnectedAgent:
     capabilities: list[str] = field(default_factory=list)
     metadata: Optional[dict[str, Any]] = None
     connected_at: int = 0
+    # Persistent Presence: "online" | "offline" | "waking"; None for ephemeral
+    # agents (treated as online when present).
+    status: Optional[str] = None
 
 
 @dataclass

@@ -159,6 +159,14 @@ export interface AgentPresenceData {
   capabilities?: string[];
   /** Custom metadata */
   metadata?: Record<string, unknown>;
+  /**
+   * Persistent Presence: keep a durable, discoverable, wakeable presence record
+   * even while the agent is disconnected (e.g. scaled to zero). Requires a broker
+   * with the feature; ignored otherwise.
+   */
+  persistent?: boolean;
+  /** Persistent Presence: where NoLag fires the HMAC-signed wake webhook. */
+  wake?: { url: string; timeoutMs?: number; enabled?: boolean };
 }
 
 // ============================================================

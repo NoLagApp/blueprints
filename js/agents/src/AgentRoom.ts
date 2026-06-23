@@ -23,6 +23,12 @@ export interface ConnectedAgent {
   connectedAt: number;
   /** Agents-protocol version the agent advertised (absent presence field = 1) */
   protocol: number;
+  /**
+   * Persistent Presence status: "online" (connected), "offline" (registered but
+   * disconnected — discoverable + wakeable), or "waking". Undefined for ordinary
+   * ephemeral agents (treat as online when present).
+   */
+  status?: "online" | "offline" | "waking";
 }
 
 /**
@@ -248,6 +254,7 @@ export class AgentRoom extends EventEmitter<AgentRoomEvents> {
       metadata: presence.metadata,
       connectedAt: actor.joinedAt || Date.now(),
       protocol: typeof presence.protocol === 'number' ? presence.protocol : 1,
+      status: actor.status,
     };
   }
 

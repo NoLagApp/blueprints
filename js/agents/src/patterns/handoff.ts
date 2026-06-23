@@ -73,16 +73,27 @@ export class Handoff {
       replyTo?: string;
       /** Skip the capability check (dispatch even if no workers are connected) */
       allowNoWorkers?: boolean;
+      /**
+       * Persistent Presence: require an ONLINE capable agent. By default the gate
+       * also accepts an offline persistent agent (discoverable, and woken by the
+       * broker on publish) — set this to restore strict, low-latency behaviour.
+       */
+      requireOnline?: boolean;
       /** Skip the protocol fail-fast (responders on 0.2.x have directed replies but don't advertise protocol yet) */
       allowLegacyResponders?: boolean;
     },
   ): Promise<ResultEnvelope | void> {
-    // Service discovery: check if any agent can handle this capability
+    // Service discovery: check if any agent can handle this capability.
+    // Persistent Presence: findAgents includes offline persistent agents, which
+    // the broker wakes on publish — so they satisfy the gate unless requireOnline.
     if (!options?.allowNoWorkers) {
       const capable = this._room.findAgents(capability);
-      if (capable.length === 0) {
+      const usable = options?.requireOnline
+        ? capable.filter((a) => a.status === undefined || a.status === "online")
+        : capable;
+      if (usable.length === 0) {
         throw new Error(
-          `No agent with capability "${capability}" is connected. ` +
+          `No ${options?.requireOnline ? "online " : ""}agent with capability "${capability}" is available. ` +
           `Available capabilities: [${this._room.getAvailableCapabilities().join(', ')}]. ` +
           `Connected agents: ${this._room.getConnectedAgents().length}. ` +
           `Use { allowNoWorkers: true } to dispatch anyway.`

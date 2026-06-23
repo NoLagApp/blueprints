@@ -41,15 +41,25 @@ class Handoff:
         wait_for_result: bool = False,
         metadata: Optional[dict[str, Any]] = None,
         allow_no_workers: bool = False,
+        require_online: bool = False,
         allow_legacy_responders: bool = False,
     ) -> Optional[ResultEnvelope]:
+        # Service discovery. Persistent Presence: find_agents includes offline
+        # persistent agents, which the broker wakes on publish — so they satisfy
+        # the gate by default. require_online restores strict, low-latency behaviour.
         if not allow_no_workers:
             capable = self._room.find_agents(capability)
-            if len(capable) == 0:
+            usable = (
+                [a for a in capable if getattr(a, "status", None) in (None, "online")]
+                if require_online
+                else capable
+            )
+            if len(usable) == 0:
                 available = self._room.get_available_capabilities()
                 connected = self._room.get_connected_agents()
                 raise RuntimeError(
-                    f'No agent with capability "{capability}" is connected. '
+                    f'No {"online " if require_online else ""}agent with capability '
+                    f'"{capability}" is available. '
                     f"Available capabilities: [{', '.join(available)}]. "
                     f"Connected agents: {len(connected)}. "
                     f"Use allow_no_workers=True to dispatch anyway."
