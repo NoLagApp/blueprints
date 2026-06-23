@@ -2,7 +2,7 @@ module github.com/NoLagApp/nolag-iot-go
 
 go 1.21
 
-require github.com/NoLagApp/go-sdk v0.1.0
+require github.com/NoLagApp/go-sdk v0.3.0
 
 require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
