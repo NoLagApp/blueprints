@@ -62,6 +62,15 @@ export class MessageStore {
   }
 
   /**
+   * Get a message by ID. Returns the live reference (mutating it mutates the
+   * stored message), or undefined if not present.
+   */
+  get(id: string): ChatMessage | undefined {
+    if (!this._ids.has(id)) return undefined;
+    return this._messages.find((m) => m.id === id);
+  }
+
+  /**
    * Clear all messages.
    */
   clear(): void {

@@ -13,5 +13,11 @@ export const TOPIC_MESSAGES = 'messages';
 /** Topic name for typing indicators within a room */
 export const TOPIC_TYPING = '_typing';
 
+/** Topic name for live streamed message chunks within a room (ephemeral) */
+export const TOPIC_STREAM = '_stream';
+
+/** Default coalesce/flush interval for streamed token chunks (ms) */
+export const DEFAULT_STREAM_FLUSH_MS = 60;
+
 /** Lobby ID for global online presence */
 export const LOBBY_ID = 'online';

@@ -65,8 +65,12 @@ export interface ChatMessage {
   data?: Record<string, unknown>;
   /** Timestamp (ms since epoch) */
   timestamp: number;
-  /** Delivery status */
-  status: 'sending' | 'sent' | 'delivered';
+  /**
+   * Delivery status. `streaming` = an in-progress streamed message whose `text`
+   * is still growing; it becomes `delivered`/`sent` when finalized, or `aborted`
+   * if the stream was cancelled.
+   */
+  status: 'sending' | 'sent' | 'delivered' | 'streaming' | 'aborted';
   /** Whether this message came from replay (history) */
   isReplay: boolean;
 }
@@ -76,6 +80,35 @@ export interface ChatMessage {
 export interface SendMessageOptions {
   /** Optional structured data to attach */
   data?: Record<string, unknown>;
+}
+
+// ============ Streaming ============
+
+export interface StreamMessageOptions {
+  /** Optional structured data to attach to the final message */
+  data?: Record<string, unknown>;
+  /**
+   * Coalesce appended tokens and publish a network delta at most this often (ms).
+   * Lower = smoother but more messages; higher = fewer/larger chunks.
+   * Default 60. The local message text updates immediately regardless.
+   */
+  flushIntervalMs?: number;
+}
+
+/**
+ * Handle for an in-progress outgoing streamed message — e.g. an AI response
+ * generated token-by-token. Append tokens as they arrive, then `complete()` to
+ * finalize + persist, or `abort()` to cancel.
+ */
+export interface MessageStream {
+  /** The optimistic streaming message; its `text` grows as you append. */
+  readonly message: ChatMessage;
+  /** Append a token/chunk; updates the message and (throttled) broadcasts a delta. */
+  append(text: string): void;
+  /** Finalize: flush, publish the persisted message, emit `streamEnd`. Returns the message. */
+  complete(): ChatMessage;
+  /** Cancel the stream; broadcasts an abort and does NOT persist a message. */
+  abort(error?: string): void;
 }
 
 // ============ Event Maps ============
@@ -99,6 +132,14 @@ export interface ChatRoomEvents {
   replayStart: [data: { count: number }];
   replayEnd: [data: { replayed: number }];
   unreadChanged: [data: { room: string; count: number }];
+  /** A streamed message started (placeholder, status 'streaming') */
+  streamStart: [message: ChatMessage];
+  /** A streamed message grew by `delta` (message.text already updated) */
+  streamChunk: [data: { message: ChatMessage; delta: string }];
+  /** A streamed message finished (status 'delivered'/'sent', final text) */
+  streamEnd: [message: ChatMessage];
+  /** A streamed message was cancelled (status 'aborted') */
+  streamAbort: [data: { message: ChatMessage; error?: string }];
 }
 
 // ============ Presence Payload ============

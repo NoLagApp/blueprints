@@ -15,4 +15,6 @@ export type {
   ChatRoomEvents,
   ChatPresenceData,
   SendMessageOptions,
+  StreamMessageOptions,
+  MessageStream,
 } from './types';

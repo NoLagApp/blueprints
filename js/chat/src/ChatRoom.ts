@@ -4,7 +4,14 @@ import { MessageStore } from './MessageStore';
 import { PresenceManager } from './PresenceManager';
 import { TypingManager } from './TypingManager';
 import { generateId } from './utils';
-import { TOPIC_MESSAGES, TOPIC_TYPING } from './constants';
+import {
+  TOPIC_MESSAGES,
+  TOPIC_TYPING,
+  TOPIC_STREAM,
+  DEFAULT_STREAM_FLUSH_MS,
+} from './constants';
+import { MessageStreamController } from './MessageStream';
+import type { StreamWirePayload } from './MessageStream';
 import type {
   ChatRoomEvents,
   ChatMessage,
@@ -12,6 +19,8 @@ import type {
   ChatPresenceData,
   ResolvedChatOptions,
   SendMessageOptions,
+  StreamMessageOptions,
+  MessageStream,
 } from './types';
 
 /**
@@ -130,15 +139,7 @@ export class ChatRoom extends EventEmitter<ChatRoomEvents> {
     this.emit('messageSent', message);
 
     // Publish to room (echo: false prevents duplicate)
-    this._roomContext.emit(TOPIC_MESSAGES, {
-      id: message.id,
-      userId: message.userId,
-      username: message.username,
-      avatar: message.avatar,
-      text: message.text,
-      data: message.data,
-      timestamp: message.timestamp,
-    }, { echo: false });
+    this._publishFinalMessage(message);
 
     // Mark as sent
     message.status = 'sent';
@@ -147,6 +148,96 @@ export class ChatRoom extends EventEmitter<ChatRoomEvents> {
     this._typingManager.stopTyping();
 
     return message;
+  }
+
+  // ============ Streaming ============
+
+  /**
+   * Begin a streamed message (e.g. an AI response). Returns a handle you append
+   * tokens to. Receivers see the message appear and grow live; on `complete()`
+   * the full message is persisted like a normal message.
+   *
+   * @example
+   * ```ts
+   * const stream = room.startStream();
+   * for await (const token of llm) stream.append(token);
+   * stream.complete();
+   * ```
+   */
+  startStream(options?: StreamMessageOptions): MessageStream {
+    const message: ChatMessage = {
+      id: generateId(),
+      userId: this._localUser.userId,
+      username: this._localUser.username,
+      avatar: this._localUser.avatar,
+      text: '',
+      data: options?.data,
+      timestamp: Date.now(),
+      status: 'streaming',
+      isReplay: false,
+    };
+
+    // Optimistic: appears in room.messages and grows as tokens arrive.
+    this._messageStore.add(message);
+    this._typingManager.stopTyping();
+
+    return new MessageStreamController(
+      message,
+      options?.flushIntervalMs ?? DEFAULT_STREAM_FLUSH_MS,
+      {
+        publishStream: (payload) =>
+          this._roomContext.emit(TOPIC_STREAM, payload, { echo: false }),
+        publishFinal: (m) => this._publishFinalMessage(m),
+        emitStart: (m) => this.emit('streamStart', m),
+        emitChunk: (m, delta) => this.emit('streamChunk', { message: m, delta }),
+        emitEnd: (m) => this.emit('streamEnd', m),
+        emitAbort: (m, error) => this.emit('streamAbort', { message: m, error }),
+      },
+    );
+  }
+
+  /**
+   * Stream a message from a token source (sync or async iterable) — drops in
+   * for an LLM stream. Appends each chunk, finalizes on completion, and aborts
+   * (re-throwing) if the source errors.
+   *
+   * @example
+   * ```ts
+   * // OpenAI / Anthropic style streams yield text chunks
+   * await room.streamMessage(tokenIterable);
+   * ```
+   */
+  async streamMessage(
+    source: AsyncIterable<string> | Iterable<string>,
+    options?: StreamMessageOptions,
+  ): Promise<ChatMessage> {
+    const stream = this.startStream(options);
+    try {
+      for await (const chunk of source) {
+        stream.append(chunk);
+      }
+      return stream.complete();
+    } catch (err) {
+      stream.abort(err instanceof Error ? err.message : String(err));
+      throw err;
+    }
+  }
+
+  /** @internal Publish a final message on the persisted `messages` topic. */
+  private _publishFinalMessage(message: ChatMessage): void {
+    this._roomContext.emit(
+      TOPIC_MESSAGES,
+      {
+        id: message.id,
+        userId: message.userId,
+        username: message.username,
+        avatar: message.avatar,
+        text: message.text,
+        data: message.data,
+        timestamp: message.timestamp,
+      },
+      { echo: false },
+    );
   }
 
   /**
@@ -197,6 +288,7 @@ export class ChatRoom extends EventEmitter<ChatRoomEvents> {
     // Subscribe to topics
     this._roomContext.subscribe(TOPIC_MESSAGES);
     this._roomContext.subscribe(TOPIC_TYPING);
+    this._roomContext.subscribe(TOPIC_STREAM);
 
     // Listen for messages
     this._roomContext.on(TOPIC_MESSAGES, (data: unknown, meta: MessageMeta) => {
@@ -209,6 +301,11 @@ export class ChatRoom extends EventEmitter<ChatRoomEvents> {
       if (userId !== this._localUser.userId) {
         this._typingManager.handleRemote(userId, typing);
       }
+    });
+
+    // Listen for live streamed messages (start / delta / abort)
+    this._roomContext.on(TOPIC_STREAM, (data: unknown) => {
+      this._handleStreamEvent(data);
     });
   }
 
@@ -294,8 +391,10 @@ export class ChatRoom extends EventEmitter<ChatRoomEvents> {
 
     this._roomContext.unsubscribe(TOPIC_MESSAGES);
     this._roomContext.unsubscribe(TOPIC_TYPING);
+    this._roomContext.unsubscribe(TOPIC_STREAM);
     this._roomContext.off(TOPIC_MESSAGES);
     this._roomContext.off(TOPIC_TYPING);
+    this._roomContext.off(TOPIC_STREAM);
 
     this._typingManager.dispose();
     this._messageStore.clear();
@@ -307,9 +406,27 @@ export class ChatRoom extends EventEmitter<ChatRoomEvents> {
 
   private _handleIncomingMessage(data: unknown, meta: MessageMeta): void {
     const msg = data as Record<string, unknown>;
+    const id = msg.id as string;
+
+    // If this is the persisted final for a message we streamed live, finalize
+    // the existing placeholder in place (authoritative text) rather than adding
+    // a duplicate. This also catches a late delta race — the final wins.
+    const streaming = this._messageStore.get(id);
+    if (streaming && streaming.status === 'streaming') {
+      streaming.text = msg.text as string;
+      streaming.data = msg.data as Record<string, unknown> | undefined;
+      streaming.status = 'delivered';
+      this.emit('streamEnd', streaming);
+      this.emit('message', streaming);
+      if (!this._active && !streaming.isReplay) {
+        this._unreadCount++;
+        this.emit('unreadChanged', { room: this.name, count: this._unreadCount });
+      }
+      return;
+    }
 
     const chatMessage: ChatMessage = {
-      id: msg.id as string,
+      id,
       userId: msg.userId as string,
       username: msg.username as string,
       avatar: msg.avatar as string | undefined,
@@ -327,6 +444,49 @@ export class ChatRoom extends EventEmitter<ChatRoomEvents> {
       if (!this._active && !chatMessage.isReplay) {
         this._unreadCount++;
         this.emit('unreadChanged', { room: this.name, count: this._unreadCount });
+      }
+    }
+  }
+
+  /** Handle an incoming live stream control payload (start / delta / abort). */
+  private _handleStreamEvent(data: unknown): void {
+    const evt = data as StreamWirePayload;
+    if (!evt || !evt.id) return;
+
+    switch (evt.type) {
+      case 'start': {
+        // Ignore our own (echo:false should prevent it, but be safe).
+        if (evt.userId === this._localUser.userId) return;
+        const message: ChatMessage = {
+          id: evt.id,
+          userId: evt.userId,
+          username: evt.username,
+          avatar: evt.avatar,
+          text: '',
+          timestamp: evt.timestamp,
+          status: 'streaming',
+          isReplay: false,
+        };
+        if (this._messageStore.add(message)) {
+          this.emit('streamStart', message);
+        }
+        break;
+      }
+      case 'delta': {
+        const message = this._messageStore.get(evt.id);
+        if (message && message.status === 'streaming') {
+          message.text += evt.text;
+          this.emit('streamChunk', { message, delta: evt.text });
+        }
+        break;
+      }
+      case 'abort': {
+        const message = this._messageStore.get(evt.id);
+        if (message && message.status === 'streaming') {
+          message.status = 'aborted';
+          this.emit('streamAbort', { message, error: evt.error });
+        }
+        break;
       }
     }
   }
