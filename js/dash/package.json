@@ -1,6 +1,6 @@
 {
   "name": "@nolag/dash",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "engines": {
     "node": ">=18.0.0"
@@ -46,10 +46,10 @@
   "license": "MIT",
   "homepage": "https://nolag.app",
   "devDependencies": {
-    "@nolag/js-sdk": "^1.8.0"
+    "@nolag/js-sdk": "^1.9.0"
   },
   "peerDependencies": {
-    "@nolag/js-sdk": "^1.8.0"
+    "@nolag/js-sdk": "^1.9.0"
   },
   "publishConfig": {
     "access": "public"
