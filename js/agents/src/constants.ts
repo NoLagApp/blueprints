@@ -28,6 +28,9 @@ export const DEFAULT_ROOM = "default-workflow";
 /** Lobby for agent activity observation */
 export const LOBBY_AGENT_ACTIVITY = "agent-activity";
 
+/** Delay before the post-setup lobby presence refetch (catches simultaneous joiners) */
+export const LOBBY_REFRESH_DELAY_MS = 2000;
+
 /** Agents-protocol version: 2 = directed replies (filter-routed results),
  *  NO_HANDLER NACKs, presence protocol advertisement. Absent/1 = legacy
  *  broadcast replies (pre-0.2.0 SDKs). */

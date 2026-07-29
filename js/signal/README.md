@@ -26,12 +26,21 @@ npm install @nolag/js-sdk @nolag/signal
 
 ## Quick Start
 
+The app owns one core NoLag client; wrappers attach to it. Any number of
+wrapper SDKs (signal, chat, dash, ...) can share the same connection as
+long as each uses its own app.
+
 ```typescript
+import { NoLag } from "@nolag/js-sdk";
 import { NoLagSignal } from "@nolag/signal";
 
-const signal = new NoLagSignal("YOUR_ACTOR_TOKEN");
+// One client for the whole app. In a browser, use a token provider so the
+// SDK can mint fresh short-lived client tokens from your backend.
+const client = NoLag(async () => (await (await fetch("/api/nolag-token")).json()).token);
+const signal = new NoLagSignal({ client });
 
-await signal.connect();
+await client.connect();   // the app owns the connection
+await signal.ready();     // wrapper setup done (identity, presence)
 
 const room = signal.joinRoom("call-room");
 
@@ -69,7 +78,31 @@ room.on("signal", async (msg) => {
       break;
   }
 });
+
+// Teardown: the wrapper releases its handlers and topics; the app closes
+// the socket (never the other way around).
+signal.detach();
+client.disconnect();
 ```
+
+## Lifecycle
+
+- **Construction = attach.** The wrapper wires its handlers onto the injected
+  client immediately. If the client is already connected, setup runs on the
+  next microtask; otherwise it runs when the client's `connect` event fires.
+- **`ready()`** resolves once the first setup completed (identity and the
+  online lobby). Auth failures surface via your own `await client.connect()`,
+  not via `ready()`.
+- **Reconnects are automatic.** The wrapper restores room presence and
+  reconciles the online-peer list, emitting only real deltas.
+- **`detach()`** removes exactly this wrapper's handlers and topics and never
+  touches the socket. It is terminal: construct a new instance to re-attach.
+  Detach while the client is still connected so server-side unsubscribes go
+  through. In frameworks, call it from your dispose hook (`onUnmounted`,
+  HMR dispose).
+- **One wrapper per (client, app).** Sharing a client across wrappers of
+  DIFFERENT apps is the intended pattern; two wrappers on the same app would
+  collide on topics and presence (the SDK warns if you do this).
 
 ## API Reference
 
@@ -78,34 +111,44 @@ room.on("signal", async (msg) => {
 #### Constructor
 
 ```typescript
-const signal = new NoLagSignal(token: string, options?: NoLagSignalOptions);
+const signal = new NoLagSignal(options: NoLagSignalOptions);
 ```
 
 **Options:**
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
+| `client` | `NoLagSocket` | *required* | The injected core NoLag client |
 | `metadata` | `Record<string, unknown>` | — | Custom peer metadata |
-| `debug` | `boolean` | `false` | Enable debug logging |
-| `reconnect` | `boolean` | `true` | Auto-reconnect on disconnect |
+| `appName` | `string` | `'signal'` | NoLag app for topic prefixes |
+| `debug` | `boolean` | `false` | Enable wrapper debug logging |
 
 #### Methods
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `connect()` | `Promise<void>` | Connect to NoLag |
-| `disconnect()` | `void` | Disconnect |
+| `ready()` | `Promise<void>` | Resolves when wrapper setup completed |
+| `detach()` | `void` | Release handlers and topics (terminal; never closes the socket) |
 | `joinRoom(name)` | `SignalRoom` | Join a signaling room |
 | `leaveRoom(name)` | `void` | Leave a room |
 | `getRooms()` | `SignalRoom[]` | Get all joined rooms |
 | `getOnlinePeers()` | `Peer[]` | Get all online peers |
 
+#### Properties
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `connected` | `boolean` | Whether currently connected |
+| `localPeer` | `Peer \| null` | The local peer |
+| `rooms` | `Map<string, SignalRoom>` | All joined rooms |
+
 #### Events
 
 | Event | Payload | Description |
 |-------|---------|-------------|
-| `connected` | — | Connected to NoLag |
-| `disconnected` | — | Disconnected |
+| `connected` | — | First setup completed |
+| `disconnected` | `reason` | Disconnected |
+| `reconnecting` | — | Reconnect attempt started |
 | `reconnected` | — | Reconnected after disconnect |
 | `error` | `Error` | Connection or protocol error |
 | `peerOnline` | `Peer` | A peer came online |

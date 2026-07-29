@@ -53,12 +53,13 @@ function createOptions(): ResolvedTrackOptions {
     appName: 'track',
     maxLocationHistory: 500,
     debug: false,
-    reconnect: true,
+    zoneNames: [],
     zones: [],
   };
 }
 
 const noop = () => {};
+const alwaysConnected = () => true;
 
 describe('TrackingZone', () => {
   let zone: TrackingZone;
@@ -66,7 +67,7 @@ describe('TrackingZone', () => {
 
   beforeEach(() => {
     ctx = createMockRoomContext();
-    zone = new TrackingZone('fleet-zone', ctx, createLocalAsset(), createOptions(), noop);
+    zone = new TrackingZone('fleet-zone', ctx, createLocalAsset(), createOptions(), noop, alwaysConnected);
   });
 
   describe('_subscribe', () => {
@@ -271,7 +272,7 @@ describe('TrackingZone', () => {
           { id: 'pre-zone', shape: 'circle' as const, center: { lat: 0, lng: 0 }, radiusMeters: 500 },
         ],
       };
-      const zoneWithFences = new TrackingZone('z', ctx, createLocalAsset(), optionsWithZones, noop);
+      const zoneWithFences = new TrackingZone('z', ctx, createLocalAsset(), optionsWithZones, noop, alwaysConnected);
       expect(zoneWithFences.getGeofences().length).toBe(1);
     });
   });
@@ -386,14 +387,28 @@ describe('TrackingZone', () => {
   });
 
   describe('_cleanup', () => {
-    it('should unsubscribe from locations and _geofence topics', () => {
+    it('should unsubscribe from locations and _geofence topics when connected', () => {
       zone._subscribe();
       zone._cleanup();
 
       expect(ctx.unsubscribe).toHaveBeenCalledWith('locations');
       expect(ctx.unsubscribe).toHaveBeenCalledWith('_geofence');
-      expect(ctx.off).toHaveBeenCalledWith('locations');
-      expect(ctx.off).toHaveBeenCalledWith('_geofence');
+      // Handler-specific off (never bare off(topic)) — the client may be shared
+      expect(ctx.off).toHaveBeenCalledWith('locations', expect.any(Function));
+      expect(ctx.off).toHaveBeenCalledWith('_geofence', expect.any(Function));
+    });
+
+    it('should skip server unsubscribes when disconnected but still remove handlers', () => {
+      const disconnectedZone = new TrackingZone(
+        'fleet-zone', ctx, createLocalAsset(), createOptions(), noop, () => false,
+      );
+      disconnectedZone._subscribe();
+      (ctx.unsubscribe as ReturnType<typeof vi.fn>).mockClear();
+      disconnectedZone._cleanup();
+
+      expect(ctx.unsubscribe).not.toHaveBeenCalled();
+      expect(ctx.off).toHaveBeenCalledWith('locations', expect.any(Function));
+      expect(ctx.off).toHaveBeenCalledWith('_geofence', expect.any(Function));
     });
 
     it('should remove all event listeners', () => {

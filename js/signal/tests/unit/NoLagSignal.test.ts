@@ -1,286 +1,406 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-
-// Mock @nolag/js-sdk before importing NoLagSignal
-const mockClient = {
-  connected: false,
-  actorId: 'test-actor-123',
-  connect: vi.fn(),
-  disconnect: vi.fn(),
-  on: vi.fn(),
-  off: vi.fn(),
-  setApp: vi.fn(),
-};
-
-const mockRoomContext = {
-  prefix: 'signal/call-room',
-  subscribe: vi.fn(),
-  unsubscribe: vi.fn(),
-  emit: vi.fn(),
-  on: vi.fn().mockReturnThis(),
-  off: vi.fn().mockReturnThis(),
-  setPresence: vi.fn(),
-  getPresence: vi.fn(() => ({})),
-  fetchPresence: vi.fn(() => Promise.resolve([])),
-};
-
-const mockLobbyContext = {
-  lobbyId: 'online',
-  subscribe: vi.fn(() => Promise.resolve({})),
-  unsubscribe: vi.fn(),
-  fetchPresence: vi.fn(() => Promise.resolve({})),
-  on: vi.fn().mockReturnThis(),
-  off: vi.fn().mockReturnThis(),
-};
-
-const mockAppContext = {
-  setRoom: vi.fn(() => mockRoomContext),
-  setLobby: vi.fn(() => mockLobbyContext),
-};
-
-mockClient.setApp.mockReturnValue(mockAppContext);
-
-vi.mock('@nolag/js-sdk', () => ({
-  NoLag: vi.fn(() => {
-    mockClient.connected = false;
-    mockClient.connect.mockImplementation(async () => {
-      mockClient.connected = true;
-    });
-    return mockClient;
-  }),
-}));
-
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { NoLagSignal } from '../../src/NoLagSignal';
+import { makeFakeClient, FakeNoLagClient } from '../helpers/fakeNoLagClient';
 
-describe('NoLagSignal', () => {
+/**
+ * Contract tests for the client-injection lifecycle (the canonical set —
+ * every wrapper SDK carries equivalents):
+ * 1. throws without an injected client
+ * 2. attach-to-connected microtask setup + ready()
+ * 3. once-per-epoch setup (connect vs reconnect)
+ * 4. reconnect diff-hydration
+ * 5. the leak test: detaching one wrapper leaves a co-attached wrapper intact
+ * 6. detach-while-disconnected / double-detach / post-detach + pre-ready throws
+ * 7. ready() rejects on early detach
+ * Plus signal domain tests (rooms, signaling, peer presence) adapted.
+ */
+
+const flushMicrotasks = async () => {
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+};
+
+function snapshotPeer(peerId: string, scope?: string) {
+  return {
+    presence: { peerId, ...(scope ? { __scope: scope } : {}) },
+  };
+}
+
+function makeSignal(client: FakeNoLagClient, opts: Record<string, unknown> = {}) {
+  return new NoLagSignal({
+    client: client as never,
+    appName: 'signal-app',
+    ...opts,
+  });
+}
+
+describe('NoLagSignal (client injection)', () => {
+  let client: FakeNoLagClient;
+
   beforeEach(() => {
-    vi.clearAllMocks();
-    mockClient.connected = false;
-    mockClient.connect.mockImplementation(async () => {
-      mockClient.connected = true;
-    });
-    mockLobbyContext.subscribe.mockResolvedValue({});
-    mockRoomContext.fetchPresence.mockResolvedValue([]);
+    client = makeFakeClient();
   });
 
-  describe('constructor', () => {
-    it('should accept token and options', () => {
-      const signal = new NoLagSignal('test-token');
-      expect(signal.connected).toBe(false);
-      expect(signal.localPeer).toBeNull();
-    });
-
-    it('should accept optional options', () => {
-      const signal = new NoLagSignal('test-token', { debug: false, reconnect: true });
-      expect(signal.connected).toBe(false);
-    });
-
-    it('should work with no options argument', () => {
-      const signal = new NoLagSignal('test-token');
-      expect(signal.connected).toBe(false);
-      expect(signal.localPeer).toBeNull();
-    });
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
-  describe('connect', () => {
-    it('should create a NoLag client and connect', async () => {
-      const signal = new NoLagSignal('test-token');
-      await signal.connect();
-
-      expect(mockClient.connect).toHaveBeenCalled();
-      expect(signal.connected).toBe(true);
-      expect(signal.localPeer).not.toBeNull();
-      expect(signal.localPeer!.actorTokenId).toBe('test-actor-123');
-      expect(signal.localPeer!.isLocal).toBe(true);
-    });
-
-    it('should assign a stable peerId to local peer', async () => {
-      const signal = new NoLagSignal('test-token');
-      await signal.connect();
-
-      expect(signal.localPeer!.peerId).toBeDefined();
-      expect(typeof signal.localPeer!.peerId).toBe('string');
-      expect(signal.localPeer!.peerId.length).toBeGreaterThan(0);
-    });
-
-    it('should subscribe to lobby', async () => {
-      const signal = new NoLagSignal('test-token');
-      await signal.connect();
-
-      expect(mockAppContext.setLobby).toHaveBeenCalledWith('online');
-      expect(mockLobbyContext.subscribe).toHaveBeenCalled();
-    });
-
-    it('should wire client lifecycle events', async () => {
-      const signal = new NoLagSignal('test-token');
-      await signal.connect();
-
-      expect(mockClient.on).toHaveBeenCalledWith('connect', expect.any(Function));
-      expect(mockClient.on).toHaveBeenCalledWith('disconnect', expect.any(Function));
-      expect(mockClient.on).toHaveBeenCalledWith('reconnect', expect.any(Function));
-      expect(mockClient.on).toHaveBeenCalledWith('error', expect.any(Function));
-    });
-
-    it('should emit connected event', async () => {
-      const signal = new NoLagSignal('test-token');
-      const handler = vi.fn();
-      signal.on('connected', handler);
-      await signal.connect();
-
-      expect(handler).toHaveBeenCalled();
-    });
-
-    it('should use default app name', async () => {
-      const signal = new NoLagSignal('test-token');
-      await signal.connect();
-
-      expect(mockClient.setApp).toHaveBeenCalledWith('signal');
-    });
-
-    it('should use custom app name when provided', async () => {
-      const signal = new NoLagSignal('test-token', { appName: 'my-app' });
-      await signal.connect();
-
-      expect(mockClient.setApp).toHaveBeenCalledWith('my-app');
-    });
-
-    it('should attach metadata to local peer', async () => {
-      const signal = new NoLagSignal('test-token', { metadata: { role: 'host' } });
-      await signal.connect();
-
-      expect(signal.localPeer!.metadata).toEqual({ role: 'host' });
-    });
+  it('throws without an injected client', () => {
+    expect(() => new NoLagSignal({} as never)).toThrow(TypeError);
   });
 
-  describe('joinRoom', () => {
-    it('should create a SignalRoom and return it', async () => {
-      const signal = new NoLagSignal('test-token');
-      await signal.connect();
+  it('sets up after the client connects and resolves ready()', async () => {
+    const signal = makeSignal(client);
+    const connected = vi.fn();
+    signal.on('connected', connected);
 
-      const room = signal.joinRoom('call-room');
+    expect(signal.localPeer).toBeNull();
 
-      expect(room).toBeDefined();
-      expect(room.name).toBe('call-room');
-      expect(mockAppContext.setRoom).toHaveBeenCalledWith('call-room');
-    });
+    client.fireConnect('actor-1');
+    await flushMicrotasks();
 
-    it('should return existing room if already joined (idempotent)', async () => {
-      const signal = new NoLagSignal('test-token');
-      await signal.connect();
-
-      const room1 = signal.joinRoom('call-room');
-      const room2 = signal.joinRoom('call-room');
-
-      expect(room1).toBe(room2);
-    });
-
-    it('should throw if not connected', () => {
-      const signal = new NoLagSignal('test-token');
-      expect(() => signal.joinRoom('call-room')).toThrow('Not connected');
-    });
-
-    it('should subscribe to signaling topic', async () => {
-      const signal = new NoLagSignal('test-token');
-      await signal.connect();
-
-      signal.joinRoom('call-room');
-
-      expect(mockRoomContext.subscribe).toHaveBeenCalledWith('signaling');
-    });
+    await signal.ready();
+    expect(connected).toHaveBeenCalledTimes(1);
+    expect(signal.localPeer?.actorTokenId).toBe('actor-1');
+    signal.detach();
   });
 
-  describe('leaveRoom', () => {
-    it('should remove the room', async () => {
-      const signal = new NoLagSignal('test-token');
-      await signal.connect();
+  it('attach-to-connected: runs setup via microtask when the client is already live', async () => {
+    client.fireConnect('actor-early');
+    const signal = makeSignal(client);
+    const connected = vi.fn();
+    signal.on('connected', connected); // wired synchronously, before the microtask
 
-      signal.joinRoom('call-room');
-      signal.leaveRoom('call-room');
+    await flushMicrotasks();
+    await signal.ready();
 
-      expect(signal.rooms.size).toBe(0);
-    });
-
-    it('should be a no-op for unknown rooms', async () => {
-      const signal = new NoLagSignal('test-token');
-      await signal.connect();
-
-      expect(() => signal.leaveRoom('nonexistent')).not.toThrow();
-    });
-
-    it('should unsubscribe from signaling topic on leave', async () => {
-      const signal = new NoLagSignal('test-token');
-      await signal.connect();
-
-      signal.joinRoom('call-room');
-      signal.leaveRoom('call-room');
-
-      expect(mockRoomContext.unsubscribe).toHaveBeenCalledWith('signaling');
-    });
+    expect(connected).toHaveBeenCalledTimes(1);
+    expect(signal.localPeer?.actorTokenId).toBe('actor-early');
+    signal.detach();
   });
 
-  describe('getRooms', () => {
-    it('should return all joined rooms', async () => {
-      let callCount = 0;
-      mockAppContext.setRoom.mockImplementation(() => {
-        callCount++;
-        return {
-          ...mockRoomContext,
-          prefix: `signal/room-${callCount}`,
-          subscribe: vi.fn(),
-          unsubscribe: vi.fn(),
-          emit: vi.fn(),
-          on: vi.fn().mockReturnThis(),
-          off: vi.fn().mockReturnThis(),
-          setPresence: vi.fn(),
-          getPresence: vi.fn(() => ({})),
-          fetchPresence: vi.fn(() => Promise.resolve([])),
+  it('runs setup once per epoch: reconnects emit reconnected, not connected', async () => {
+    const signal = makeSignal(client);
+    const connected = vi.fn();
+    const reconnected = vi.fn();
+    signal.on('connected', connected);
+    signal.on('reconnected', reconnected);
+
+    client.fireConnect();
+    await flushMicrotasks();
+    client.fireConnect(); // reconnect: core fires 'connect' again
+    await flushMicrotasks();
+
+    expect(connected).toHaveBeenCalledTimes(1);
+    expect(reconnected).toHaveBeenCalledTimes(1);
+    signal.detach();
+  });
+
+  it('diff-hydrates online peers across reconnects', async () => {
+    client.lobbySnapshot = {
+      room1: { actorA: snapshotPeer('peer-a'), actorB: snapshotPeer('peer-b') },
+    };
+    const signal = makeSignal(client);
+    const online = vi.fn();
+    const offline = vi.fn();
+    signal.on('peerOnline', online);
+    signal.on('peerOffline', offline);
+
+    client.fireConnect();
+    await flushMicrotasks();
+    expect(online).toHaveBeenCalledTimes(2);
+    expect(signal.getOnlinePeers().map((p) => p.peerId).sort()).toEqual(['peer-a', 'peer-b']);
+
+    // Reconnect with A gone and C new: exactly one offline + one online
+    client.lobbySnapshot = {
+      room1: { actorB: snapshotPeer('peer-b'), actorC: snapshotPeer('peer-c') },
+    };
+    client.fireConnect();
+    await flushMicrotasks();
+
+    expect(offline).toHaveBeenCalledTimes(1);
+    expect(offline.mock.calls[0][0].peerId).toBe('peer-a');
+    expect(online).toHaveBeenCalledTimes(3);
+    expect(signal.getOnlinePeers().map((p) => p.peerId).sort()).toEqual(['peer-b', 'peer-c']);
+    signal.detach();
+  });
+
+  it('LEAK TEST: detaching one wrapper leaves a co-attached wrapper fully intact', async () => {
+    const signalA = makeSignal(client, { appName: 'app-a' });
+    const signalB = makeSignal(client, { appName: 'app-b' });
+
+    client.fireConnect();
+    await flushMicrotasks();
+    await signalA.ready();
+    await signalB.ready();
+
+    signalA.joinRoom('call');
+    signalB.joinRoom('call');
+
+    const bTopicHandlers = client.handlerCount('app-b/call/signaling');
+    const bConnectHandlersBefore = client.handlerCount('connect');
+    expect(bTopicHandlers).toBeGreaterThan(0);
+
+    signalA.detach();
+
+    // B's topic handlers and lifecycle handlers are untouched
+    expect(client.handlerCount('app-b/call/signaling')).toBe(bTopicHandlers);
+    expect(client.handlerCount('connect')).toBe(bConnectHandlersBefore - 1);
+    // A's topic handlers and subscriptions are gone
+    expect(client.handlerCount('app-a/call/signaling')).toBe(0);
+    expect(client.isSubscribed('app-a/call/signaling')).toBe(false);
+    expect(client.isSubscribed('app-b/call/signaling')).toBe(true);
+
+    // B still receives signals targeted at its local peer
+    const room = signalB.rooms.get('call')!;
+    const onSignal = vi.fn();
+    room.on('signal', onSignal);
+    client.fireMessage('app-b/call/signaling', {
+      id: 's1', type: 'offer', fromPeerId: 'remote',
+      toPeerId: signalB.localPeer!.peerId, payload: {}, timestamp: Date.now(),
+    }, {});
+    expect(onSignal).toHaveBeenCalledTimes(1);
+    signalB.detach();
+  });
+
+  it('detach while disconnected skips server unsubscribes and removes handlers', async () => {
+    const signal = makeSignal(client);
+    client.fireConnect();
+    await flushMicrotasks();
+    signal.joinRoom('call');
+
+    client.fireDisconnect();
+    client.sent = [];
+    signal.detach();
+
+    expect(client.sent.filter((s) => s.op === 'unsubscribe')).toEqual([]);
+    expect(client.sent.filter((s) => s.op === 'lobbyUnsubscribe')).toEqual([]);
+    expect(client.handledEvents()).toEqual([]);
+  });
+
+  it('double detach is a no-op and public methods throw after detach', async () => {
+    const signal = makeSignal(client);
+    client.fireConnect();
+    await flushMicrotasks();
+
+    signal.detach();
+    expect(() => signal.detach()).not.toThrow();
+    expect(() => signal.joinRoom('x')).toThrow(/detached/);
+  });
+
+  it('ready() rejects when detached before ready and joinRoom guards pre-ready', async () => {
+    const signal = makeSignal(client);
+    expect(() => signal.joinRoom('x')).toThrow(/not ready/);
+
+    const readyPromise = signal.ready();
+    signal.detach();
+    await expect(readyPromise).rejects.toThrow(/detached before ready/);
+  });
+
+  it('filters presence tagged with another app scope, accepts own and untagged', async () => {
+    const signal = makeSignal(client);
+    const online = vi.fn();
+    signal.on('peerOnline', online);
+    client.fireConnect();
+    await flushMicrotasks();
+
+    client.fireLobby('join', { actorId: 'actor-own', data: { peerId: 'p1', __scope: 'signal-app' } });
+    client.fireLobby('join', { actorId: 'actor-foreign', data: { peerId: 'p2', __scope: 'other-app' } });
+    client.fireLobby('join', { actorId: 'actor-untagged', data: { peerId: 'p3' } });
+
+    expect(online).toHaveBeenCalledTimes(2);
+    expect(signal.getOnlinePeers().map((p) => p.peerId).sort()).toEqual(['p1', 'p3']);
+    signal.detach();
+  });
+
+  it('runs the deferred lobby refresh and cancels it on detach', async () => {
+    vi.useFakeTimers();
+    const signal = makeSignal(client);
+    client.fireConnect();
+    await flushMicrotasks();
+
+    client.sent = [];
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(client.sent.some((s) => s.op === 'lobbyFetchPresence')).toBe(true);
+
+    // A new wrapper's pending refresh dies with detach
+    const signal2 = makeSignal(client, { appName: 'signal-app-2' });
+    client.fireConnect();
+    await flushMicrotasks();
+    client.sent = [];
+    signal2.detach();
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(client.sent.filter((s) => s.op === 'lobbyFetchPresence' && s.topic?.startsWith('signal-app-2'))).toEqual([]);
+
+    signal.detach();
+  });
+
+  it('stale setup aborts: a reconnect mid-setup wins', async () => {
+    // Make the first lobby subscribe hang until after a second connect
+    let resolveFirst: (v: Record<string, Record<string, unknown>>) => void;
+    const origSetApp = client.setApp.bind(client);
+    let call = 0;
+    (client as { setApp: typeof client.setApp }).setApp = (appName: string) => {
+      const ctx = origSetApp(appName);
+      const origSetLobby = ctx.setLobby.bind(ctx);
+      ctx.setLobby = (lobbyId: string) => {
+        const lobby = origSetLobby(lobbyId);
+        const origSubscribe = lobby.subscribe.bind(lobby);
+        lobby.subscribe = () => {
+          call++;
+          if (call === 1) {
+            return new Promise((resolve) => { resolveFirst = resolve; });
+          }
+          return origSubscribe();
         };
-      });
+        return lobby;
+      };
+      return ctx;
+    };
 
-      const signal = new NoLagSignal('test-token');
-      await signal.connect();
+    const signal = makeSignal(client);
+    const connected = vi.fn();
+    signal.on('connected', connected);
 
-      signal.joinRoom('room-a');
-      signal.joinRoom('room-b');
+    client.fireConnect(); // epoch 1: hangs in lobby subscribe
+    await flushMicrotasks();
+    client.fireConnect(); // epoch 2: completes normally
+    await flushMicrotasks();
+    resolveFirst!({}); // epoch 1 resumes, must abort silently
+    await flushMicrotasks();
 
-      expect(signal.getRooms().length).toBe(2);
-    });
+    // Ready resolved exactly once, via epoch 2
+    await signal.ready();
+    expect(connected).toHaveBeenCalledTimes(1);
+    signal.detach();
+  });
+});
+
+describe('NoLagSignal (domain behavior)', () => {
+  let client: FakeNoLagClient;
+
+  const setup = async (opts: Record<string, unknown> = {}) => {
+    const signal = makeSignal(client, opts);
+    client.fireConnect('local-actor');
+    await flushMicrotasks();
+    await signal.ready();
+    return signal;
+  };
+
+  beforeEach(() => {
+    client = makeFakeClient();
   });
 
-  describe('disconnect', () => {
-    it('should clean up rooms and disconnect client', async () => {
-      const signal = new NoLagSignal('test-token');
-      await signal.connect();
-      signal.joinRoom('call-room');
-
-      signal.disconnect();
-
-      expect(signal.rooms.size).toBe(0);
-      expect(mockClient.disconnect).toHaveBeenCalled();
-      expect(mockLobbyContext.unsubscribe).toHaveBeenCalled();
-      expect(signal.localPeer).toBeNull();
-    });
-
-    it('should clear online peers on disconnect', async () => {
-      const signal = new NoLagSignal('test-token');
-      await signal.connect();
-
-      signal.disconnect();
-
-      expect(signal.getOnlinePeers()).toEqual([]);
-    });
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
-  describe('getOnlinePeers', () => {
-    it('should return empty array initially', async () => {
-      const signal = new NoLagSignal('test-token');
-      await signal.connect();
+  it('assigns a stable local peer with metadata after ready', async () => {
+    const signal = await setup({ metadata: { role: 'host' } });
+    expect(signal.localPeer!.peerId).toBeTruthy();
+    expect(signal.localPeer!.isLocal).toBe(true);
+    expect(signal.localPeer!.metadata).toEqual({ role: 'host' });
+    signal.detach();
+  });
 
-      expect(signal.getOnlinePeers()).toEqual([]);
+  it('joinRoom subscribes to the signaling topic and is idempotent', async () => {
+    const signal = await setup();
+    const room1 = signal.joinRoom('call');
+    const room2 = signal.joinRoom('call');
+
+    expect(room1).toBe(room2);
+    expect(client.isSubscribed('signal-app/call/signaling')).toBe(true);
+    signal.detach();
+  });
+
+  it('uses a custom app name for topic prefixes', async () => {
+    const signal = await setup({ appName: 'my-app' });
+    signal.joinRoom('call');
+    expect(client.isSubscribed('my-app/call/signaling')).toBe(true);
+    signal.detach();
+  });
+
+  it('sendOffer emits a signal message on the signaling topic', async () => {
+    const signal = await setup();
+    const room = signal.joinRoom('call');
+    client.sent = [];
+    const offer: RTCSessionDescriptionInit = { type: 'offer', sdp: 'v=0' };
+    room.sendOffer('remote-peer', offer);
+
+    const emitted = client.sent.find((s) => s.op === 'emit' && s.topic === 'signal-app/call/signaling');
+    expect(emitted).toBeTruthy();
+    const msg = emitted!.data as Record<string, unknown>;
+    expect(msg.type).toBe('offer');
+    expect(msg.toPeerId).toBe('remote-peer');
+    expect(msg.payload).toEqual(offer);
+    signal.detach();
+  });
+
+  it('emits "signal" only for messages targeted at the local peer', async () => {
+    const signal = await setup();
+    const room = signal.joinRoom('call');
+    const onSignal = vi.fn();
+    room.on('signal', onSignal);
+
+    client.fireMessage('signal-app/call/signaling', {
+      id: 's1', type: 'offer', fromPeerId: 'remote',
+      toPeerId: signal.localPeer!.peerId, payload: {}, timestamp: Date.now(),
+    }, {});
+    client.fireMessage('signal-app/call/signaling', {
+      id: 's2', type: 'offer', fromPeerId: 'remote',
+      toPeerId: 'someone-else', payload: {}, timestamp: Date.now(),
+    }, {});
+
+    expect(onSignal).toHaveBeenCalledTimes(1);
+    expect((onSignal.mock.calls[0][0] as { id: string }).id).toBe('s1');
+    signal.detach();
+  });
+
+  it('routes room presence to all joined rooms and tracks online peers', async () => {
+    const signal = await setup();
+    const roomA = signal.joinRoom('call-a');
+    const roomB = signal.joinRoom('call-b');
+    const joinedA = vi.fn();
+    const joinedB = vi.fn();
+    const online = vi.fn();
+    roomA.on('peerJoined', joinedA);
+    roomB.on('peerJoined', joinedB);
+    signal.on('peerOnline', online);
+
+    client.firePresence('join', {
+      actorTokenId: 'actor-remote',
+      presence: { peerId: 'p-remote', __scope: 'signal-app' },
     });
 
-    it('should return empty array before connect', () => {
-      const signal = new NoLagSignal('test-token');
-      expect(signal.getOnlinePeers()).toEqual([]);
-    });
+    expect(joinedA).toHaveBeenCalledTimes(1);
+    expect(joinedB).toHaveBeenCalledTimes(1);
+    expect(online).toHaveBeenCalledTimes(1);
+    expect(signal.getOnlinePeers().map((p) => p.peerId)).toContain('p-remote');
+    signal.detach();
+  });
+
+  it('leaveRoom unsubscribes and removes the room', async () => {
+    const signal = await setup();
+    signal.joinRoom('call');
+    client.sent = [];
+    signal.leaveRoom('call');
+
+    expect(signal.rooms.size).toBe(0);
+    expect(client.sent.some((s) => s.op === 'unsubscribe' && s.topic === 'signal-app/call/signaling')).toBe(true);
+    signal.detach();
+  });
+
+  it('re-applies room presence on reconnect', async () => {
+    const signal = await setup();
+    signal.joinRoom('call');
+    client.sent = [];
+
+    client.fireConnect('local-actor'); // reconnect
+    await flushMicrotasks();
+
+    // Presence re-set for the active room on restore
+    expect(client.sent.some((s) => s.op === 'setPresence' && s.topic === 'signal-app/call')).toBe(true);
+    signal.detach();
   });
 });

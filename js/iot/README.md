@@ -24,16 +24,23 @@ npm install @nolag/js-sdk @nolag/iot
 
 ## Quick Start
 
+The app owns one core NoLag client; wrappers attach to it. Any number of
+wrapper SDKs (iot, chat, dash, ...) can share the same connection as long as
+each uses its own app.
+
 ```typescript
+import { NoLag } from "@nolag/js-sdk";
 import { NoLagIoT } from "@nolag/iot";
 
-// --- Device: sends telemetry, receives commands ---
-const device = new NoLagIoT("DEVICE_TOKEN", {
-  deviceName: "Sensor #7",
-  role: "device",
-});
+// One client for the whole app. In a browser, use a token provider so the
+// SDK can mint fresh short-lived client tokens from your backend.
+const client = NoLag(async () => (await (await fetch("/api/nolag-token")).json()).token);
 
-await device.connect();
+// --- Device: sends telemetry, receives commands ---
+const device = new NoLagIoT({ client, deviceName: "Sensor #7", role: "device" });
+
+await client.connect();   // the app owns the connection
+await device.ready();     // wrapper setup done (identity, presence, groups)
 
 const group = device.joinGroup("warehouse-a");
 
@@ -49,30 +56,46 @@ group.on("command", (cmd) => {
   group.ackCommand(cmd.id, "completed", { success: true });
 });
 
-// --- Controller: monitors telemetry, sends commands ---
-const controller = new NoLagIoT("CONTROLLER_TOKEN", {
-  deviceName: "Dashboard",
-  role: "controller",
-});
+// Teardown: the wrapper releases its handlers and topics (and cancels any
+// pending command timeouts); the app closes the socket.
+device.detach();
+client.disconnect();
+```
 
-await controller.connect();
+A controller shares the same pattern — construct with `{ client, role: "controller" }`,
+`await controller.ready()`, then monitor telemetry and dispatch commands:
 
+```typescript
 const controlGroup = controller.joinGroup("warehouse-a");
 
-// Monitor telemetry
 controlGroup.on("telemetry", (reading) => {
   console.log(`${reading.deviceId}/${reading.sensorId}: ${reading.value}${reading.unit}`);
 });
 
-// Send a command to a device
-const cmd = await controlGroup.sendCommand("sensor-7", "calibrate", {
-  offset: 0.5,
-});
-
-controlGroup.on("commandAck", (ack) => {
-  console.log(`Command ${ack.id}: ${ack.status}`);
-});
+// Resolves when the target device acks; rejects on failure or timeout
+const cmd = await controlGroup.sendCommand("sensor-7", "calibrate", { offset: 0.5 });
+console.log(`Command ${cmd.id}: ${cmd.status}`);
 ```
+
+## Lifecycle
+
+- **Construction = attach.** The wrapper wires its handlers onto the injected
+  client immediately. If the client is already connected, setup runs on the
+  next microtask; otherwise it runs when the client's `connect` event fires.
+- **`ready()`** resolves once the first setup completed (identity, online
+  lobby, configured groups). Auth failures surface via your own
+  `await client.connect()`, not via `ready()`.
+- **Reconnects are automatic.** The wrapper re-applies device presence to every
+  joined group (persistent presence) and reconciles the online-device list,
+  emitting only real deltas.
+- **`detach()`** removes exactly this wrapper's handlers and topics, cancels any
+  pending command-timeout timers, and never touches the socket. It is terminal:
+  construct a new instance to re-attach. Detach while the client is still
+  connected so server-side unsubscribes go through. In frameworks, call it from
+  your dispose hook (`onUnmounted`, HMR dispose).
+- **One wrapper per (client, app).** Sharing a client across wrappers of
+  DIFFERENT apps is the intended pattern; two wrappers on the same app would
+  collide on topics and presence (the SDK warns if you do this).
 
 ## API Reference
 
@@ -81,41 +104,51 @@ controlGroup.on("commandAck", (ack) => {
 #### Constructor
 
 ```typescript
-const iot = new NoLagIoT(token: string, options?: NoLagIoTOptions);
+const iot = new NoLagIoT(options: NoLagIoTOptions);
 ```
 
 **Options:**
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
+| `client` | `NoLagSocket` | *required* | The injected core NoLag client |
 | `deviceId` | `string` | auto-generated | Unique device ID |
 | `deviceName` | `string` | — | Display name |
 | `role` | `DeviceRole` | `'device'` | `'device'` or `'controller'` |
 | `metadata` | `Record<string, unknown>` | — | Custom device data |
+| `appName` | `string` | `'iot'` | NoLag app for topic prefixes |
 | `groups` | `string[]` | — | Auto-join these groups on connect |
 | `maxTelemetryPoints` | `number` | `1000` | Max telemetry points in memory |
 | `commandTimeout` | `number` | `30000` | Command ack timeout (ms) |
 | `debug` | `boolean` | `false` | Enable debug logging |
-| `reconnect` | `boolean` | `true` | Auto-reconnect on disconnect |
 
 #### Methods
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `connect()` | `Promise<void>` | Connect to NoLag |
-| `disconnect()` | `void` | Disconnect |
+| `ready()` | `Promise<void>` | Resolves when wrapper setup completed |
+| `detach()` | `void` | Release handlers, topics, and command timers (terminal; never closes the socket) |
 | `joinGroup(name)` | `DeviceGroup` | Join a device group |
 | `leaveGroup(name)` | `void` | Leave a group |
 | `getGroups()` | `DeviceGroup[]` | Get all joined groups |
 | `getOnlineDevices()` | `Device[]` | Get online devices |
 
+#### Properties
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `connected` | `boolean` | Whether currently connected |
+| `localDevice` | `Device \| null` | The local device |
+| `groups` | `Map<string, DeviceGroup>` | All joined groups |
+
 #### Events
 
 | Event | Payload | Description |
 |-------|---------|-------------|
-| `connected` | — | Connected |
-| `disconnected` | — | Disconnected |
-| `reconnected` | — | Reconnected |
+| `connected` | — | First setup completed |
+| `disconnected` | `reason` | Disconnected |
+| `reconnecting` | — | The client is re-establishing the connection |
+| `reconnected` | — | Setup restored after a reconnect |
 | `error` | `Error` | Error |
 | `deviceOnline` | `Device` | Device came online |
 | `deviceOffline` | `Device` | Device went offline |

@@ -62,13 +62,13 @@ function createOptions(overrides: Partial<ResolvedIoTOptions> = {}): ResolvedIoT
     maxTelemetryPoints: 100,
     commandTimeout: 5000,
     debug: false,
-    reconnect: true,
     groups: [],
     ...overrides,
   };
 }
 
 const noop = () => {};
+const alwaysConnected = () => true;
 
 describe('DeviceGroup', () => {
   let group: DeviceGroup;
@@ -77,7 +77,7 @@ describe('DeviceGroup', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     ctx = createMockRoomContext();
-    group = new DeviceGroup('factory-floor', ctx, createLocalDevice(), createOptions(), noop);
+    group = new DeviceGroup('factory-floor', ctx, createLocalDevice(), createOptions(), noop, alwaysConnected);
   });
 
   afterEach(() => {
@@ -315,6 +315,7 @@ describe('DeviceGroup', () => {
         createControllerDevice(),
         createOptions({ role: 'controller', deviceId: 'controller-id' }),
         noop,
+        alwaysConnected,
       );
       controllerGroup._subscribe();
 
@@ -344,7 +345,8 @@ describe('DeviceGroup', () => {
       const promise = group.sendCommand('device-01', 'ping');
 
       // Find the command id that was emitted
-      const emittedCmd = (ctx.emit.mock.calls.find(c => c[0] === 'commands') as any)[1];
+      const emitMock = ctx.emit as unknown as { mock: { calls: unknown[][] } };
+      const emittedCmd = (emitMock.mock.calls.find((c) => c[0] === 'commands') as unknown[])[1] as { id: string };
       const cmdId = emittedCmd.id;
 
       ctx._fireMessage('_cmd_ack', {

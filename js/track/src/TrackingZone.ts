@@ -1,4 +1,4 @@
-import type { RoomContext } from '@nolag/js-sdk';
+import type { RoomContext, MessageMeta } from '@nolag/js-sdk';
 import { EventEmitter } from './EventEmitter';
 import { PresenceManager } from './PresenceManager';
 import { LocationStore } from './LocationStore';
@@ -34,6 +34,12 @@ export class TrackingZone extends EventEmitter<TrackZoneEvents> {
   private _geofenceManager: GeofenceManager;
   private _locationCells = new Set<string>();
   private _log: (...args: unknown[]) => void;
+  private _isConnected: () => boolean;
+
+  // Stored topic handler refs — cleanup removes exactly these, never all
+  // handlers for a topic (the client may be shared with other consumers).
+  private _onLocationsRef: ((data: unknown, meta: MessageMeta) => void) | null = null;
+  private _onGeofenceRef: ((data: unknown) => void) | null = null;
 
   /** @internal */
   constructor(
@@ -42,6 +48,7 @@ export class TrackingZone extends EventEmitter<TrackZoneEvents> {
     localAsset: TrackedAsset,
     options: ResolvedTrackOptions,
     log: (...args: unknown[]) => void,
+    isConnected: () => boolean,
   ) {
     super();
     this.name = name;
@@ -49,6 +56,7 @@ export class TrackingZone extends EventEmitter<TrackZoneEvents> {
     this._localAsset = localAsset;
     this._options = options;
     this._log = log;
+    this._isConnected = isConnected;
 
     this._presenceManager = new PresenceManager(localAsset.actorTokenId);
     this._locationStore = new LocationStore(options.maxLocationHistory);
@@ -172,13 +180,16 @@ export class TrackingZone extends EventEmitter<TrackZoneEvents> {
     }
     this._roomContext.subscribe(TOPIC_GEOFENCE);
 
-    this._roomContext.on(TOPIC_LOCATIONS, (data: unknown) => {
+    // Listeners (refs stored for handler-specific removal)
+    this._onLocationsRef = (data: unknown) => {
       this._handleIncomingLocation(data);
-    });
+    };
+    this._roomContext.on(TOPIC_LOCATIONS, this._onLocationsRef);
 
-    this._roomContext.on(TOPIC_GEOFENCE, (data: unknown) => {
+    this._onGeofenceRef = (data: unknown) => {
       this._handleIncomingGeofenceEvent(data);
-    });
+    };
+    this._roomContext.on(TOPIC_GEOFENCE, this._onGeofenceRef);
   }
 
   /** @internal Set presence and fetch zone members */
@@ -249,10 +260,19 @@ export class TrackingZone extends EventEmitter<TrackZoneEvents> {
   _cleanup(): void {
     this._log('Zone cleanup:', this.name);
 
-    this._roomContext.unsubscribe(TOPIC_LOCATIONS);
-    this._roomContext.unsubscribe(TOPIC_GEOFENCE);
-    this._roomContext.off(TOPIC_LOCATIONS);
-    this._roomContext.off(TOPIC_GEOFENCE);
+    // Server unsubscribes need a live socket; skip when disconnected
+    // (best-effort — the core would no-op with an error callback anyway).
+    if (this._isConnected()) {
+      this._roomContext.unsubscribe(TOPIC_LOCATIONS);
+      this._roomContext.unsubscribe(TOPIC_GEOFENCE);
+    }
+
+    // Handler-specific removal only: the client may be shared, and a bare
+    // off(topic) would strip other consumers' handlers too.
+    if (this._onLocationsRef) this._roomContext.off(TOPIC_LOCATIONS, this._onLocationsRef);
+    if (this._onGeofenceRef) this._roomContext.off(TOPIC_GEOFENCE, this._onGeofenceRef);
+    this._onLocationsRef = null;
+    this._onGeofenceRef = null;
 
     this._presenceManager.clear();
     this._locationStore.clear();
@@ -332,6 +352,9 @@ export class TrackingZone extends EventEmitter<TrackZoneEvents> {
       assetId: this._localAsset.assetId,
       assetName: this._localAsset.assetName,
       metadata: this._localAsset.metadata,
+      // Scope tag: on a shared client, other apps' wrappers filter our
+      // presence out by this (and we filter theirs).
+      __scope: this._options.appName,
     };
     this._roomContext.setPresence(presenceData);
   }

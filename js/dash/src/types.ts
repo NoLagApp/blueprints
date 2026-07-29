@@ -1,12 +1,26 @@
+import type { NoLagSocket } from '@nolag/js-sdk';
+
 export interface NoLagDashOptions {
+  /**
+   * The injected NoLag core client. The app owns its lifecycle: create it
+   * with `NoLag(tokenOrProvider)`, call `connect()`/`disconnect()` yourself.
+   * The wrapper only attaches protocol behavior on top and releases it
+   * again via `detach()`. One wrapper per (client, appName).
+   */
+  client: NoLagSocket;
+  /** Display name for this viewer */
   username?: string;
+  /** Custom metadata attached to viewer presence */
   metadata?: Record<string, unknown>;
+  /** NoLag app name (default: 'dash') */
   appName?: string;
-  url?: string;
+  /** Max metric points kept in memory per stream (default: 1000) */
   maxMetricPoints?: number;
+  /** Default aggregation window in ms (default: 60000) */
   aggregationWindow?: number;
+  /** Enable debug logging for the wrapper (default: false) */
   debug?: boolean;
-  reconnect?: boolean;
+  /** List of panels to subscribe to on connect */
   panels?: string[];
 }
 
@@ -14,11 +28,9 @@ export interface ResolvedDashOptions {
   username?: string;
   metadata?: Record<string, unknown>;
   appName: string;
-  url?: string;
   maxMetricPoints: number;
   aggregationWindow: number;
   debug: boolean;
-  reconnect: boolean;
   panels: string[];
 }
 
@@ -76,6 +88,7 @@ export interface DashPresenceData {
 export interface DashClientEvents {
   connected: [];
   disconnected: [reason: string];
+  reconnecting: [];
   reconnected: [];
   error: [error: Error];
   viewerOnline: [viewer: DashboardViewer];

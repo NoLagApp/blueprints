@@ -26,6 +26,11 @@ export class SignalRoom extends EventEmitter<SignalRoomEvents> {
   private _options: ResolvedSignalOptions;
   private _peerManager: PeerManager;
   private _log: (...args: unknown[]) => void;
+  private _isConnected: () => boolean;
+
+  // Stored topic handler ref — cleanup removes exactly this, never all
+  // handlers for a topic (the client may be shared with other consumers).
+  private _onSignalingRef: ((data: unknown) => void) | null = null;
 
   /** @internal */
   constructor(
@@ -34,6 +39,7 @@ export class SignalRoom extends EventEmitter<SignalRoomEvents> {
     localPeer: Peer,
     options: ResolvedSignalOptions,
     log: (...args: unknown[]) => void,
+    isConnected: () => boolean,
   ) {
     super();
     this.name = name;
@@ -41,6 +47,7 @@ export class SignalRoom extends EventEmitter<SignalRoomEvents> {
     this._localPeer = localPeer;
     this._options = options;
     this._log = log;
+    this._isConnected = isConnected;
 
     this._peerManager = new PeerManager(localPeer.actorTokenId);
   }
@@ -128,9 +135,11 @@ export class SignalRoom extends EventEmitter<SignalRoomEvents> {
 
     this._roomContext.subscribe(TOPIC_SIGNALING);
 
-    this._roomContext.on(TOPIC_SIGNALING, (data: unknown) => {
+    // Listen for signals (ref stored for handler-specific removal)
+    this._onSignalingRef = (data: unknown) => {
       this._handleIncomingSignal(data);
-    });
+    };
+    this._roomContext.on(TOPIC_SIGNALING, this._onSignalingRef);
   }
 
   /** @internal Set presence and fetch room members */
@@ -189,8 +198,16 @@ export class SignalRoom extends EventEmitter<SignalRoomEvents> {
   _cleanup(): void {
     this._log('Room cleanup:', this.name);
 
-    this._roomContext.unsubscribe(TOPIC_SIGNALING);
-    this._roomContext.off(TOPIC_SIGNALING);
+    // Server unsubscribes need a live socket; skip when disconnected
+    // (best-effort — the core would no-op with an error callback anyway).
+    if (this._isConnected()) {
+      this._roomContext.unsubscribe(TOPIC_SIGNALING);
+    }
+
+    // Handler-specific removal only: the client may be shared, and a bare
+    // off(topic) would strip other consumers' handlers too.
+    if (this._onSignalingRef) this._roomContext.off(TOPIC_SIGNALING, this._onSignalingRef);
+    this._onSignalingRef = null;
 
     this._peerManager.clear();
     this.removeAllListeners();
@@ -212,6 +229,9 @@ export class SignalRoom extends EventEmitter<SignalRoomEvents> {
     const presenceData: SignalPresenceData = {
       peerId: this._localPeer.peerId,
       metadata: this._localPeer.metadata,
+      // Scope tag: on a shared client, other apps' wrappers filter our
+      // presence out by this (and we filter theirs).
+      __scope: this._options.appName,
     };
     this._roomContext.setPresence(presenceData);
   }

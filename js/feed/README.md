@@ -24,18 +24,24 @@ npm install @nolag/js-sdk @nolag/feed
 
 ## Quick Start
 
+The app owns one core NoLag client; wrappers attach to it. Any number of
+wrapper SDKs (feed, chat, notify, ...) can share the same connection as
+long as each uses its own app.
+
 ```typescript
+import { NoLag } from "@nolag/js-sdk";
 import { NoLagFeed } from "@nolag/feed";
 
-const feed = new NoLagFeed("YOUR_ACTOR_TOKEN", {
-  username: "Alice",
-});
+// One client for the whole app. In a browser, use a token provider so the
+// SDK can mint fresh short-lived client tokens from your backend.
+const client = NoLag(async () => (await (await fetch("/api/nolag-token")).json()).token);
+const feed = new NoLagFeed({ client, username: "Alice" });
 
-await feed.connect();
+await client.connect();   // the app owns the connection
+await feed.ready();       // wrapper setup done (identity, presence, channels)
 
+// Join a channel and create a post
 const channel = feed.joinChannel("main");
-
-// Create a post
 channel.createPost({
   content: "Just shipped v2.0!",
   media: [{ type: "image", url: "https://example.com/screenshot.png" }],
@@ -50,11 +56,40 @@ channel.on("postCreated", (post) => {
 channel.likePost(postId);
 channel.addComment(postId, "Congrats!");
 
-// Real-time updates
-channel.on("postLiked", (post) => {
-  updateLikeCount(post.id, post.likeCount);
+// Real-time reaction updates
+channel.on("postLiked", ({ postId, likeCount }) => {
+  updateLikeCount(postId, likeCount);
 });
+
+// See who's online
+feed.on("userOnline", (user) => {
+  console.log(`${user.username} came online`);
+});
+
+// Teardown: the wrapper releases its handlers and topics; the app closes
+// the socket (never the other way around).
+feed.detach();
+client.disconnect();
 ```
+
+## Lifecycle
+
+- **Construction = attach.** The wrapper wires its handlers onto the injected
+  client immediately. If the client is already connected, setup runs on the
+  next microtask; otherwise it runs when the client's `connect` event fires.
+- **`ready()`** resolves once the first setup completed (identity, online
+  lobby, configured channels). Auth failures surface via your own
+  `await client.connect()`, not via `ready()`.
+- **Reconnects are automatic.** The wrapper restores presence and reconciles
+  the online-user list, emitting only real deltas.
+- **`detach()`** removes exactly this wrapper's handlers and topics and never
+  touches the socket. It is terminal: construct a new instance to re-attach.
+  Detach while the client is still connected so server-side unsubscribes go
+  through. In frameworks, call it from your dispose hook (`onUnmounted`,
+  HMR dispose).
+- **One wrapper per (client, app).** Sharing a client across wrappers of
+  DIFFERENT apps is the intended pattern; two wrappers on the same app would
+  collide on topics and presence (the SDK warns if you do this).
 
 ## API Reference
 
@@ -63,40 +98,53 @@ channel.on("postLiked", (post) => {
 #### Constructor
 
 ```typescript
-const feed = new NoLagFeed(token: string, options: NoLagFeedOptions);
+const feed = new NoLagFeed(options: NoLagFeedOptions);
 ```
 
 **Options:**
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
+| `client` | `NoLagSocket` | *required* | The injected core NoLag client |
 | `username` | `string` | *required* | Display name |
 | `avatar` | `string` | — | Avatar URL |
 | `metadata` | `Record<string, unknown>` | — | Custom user data |
+| `appName` | `string` | `'feed'` | NoLag app for topic prefixes |
 | `channels` | `string[]` | — | Auto-join these channels on connect |
 | `maxPostCache` | `number` | `200` | Max posts kept in memory |
 | `maxCommentCache` | `number` | `100` | Max comments per post |
 | `debug` | `boolean` | `false` | Enable debug logging |
-| `reconnect` | `boolean` | `true` | Auto-reconnect on disconnect |
 
 #### Methods
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `connect()` | `Promise<void>` | Connect to NoLag |
-| `disconnect()` | `void` | Disconnect |
+| `ready()` | `Promise<void>` | Resolves when wrapper setup completed |
+| `detach()` | `void` | Release handlers and topics (terminal; never closes the socket) |
 | `joinChannel(name)` | `FeedChannel` | Join a feed channel |
 | `leaveChannel(name)` | `void` | Leave a channel |
+| `getChannels()` | `FeedChannel[]` | Get all joined channels |
 | `getOnlineUsers()` | `FeedUser[]` | Get all online users |
+| `updateProfile(updates)` | `void` | Update username, avatar, or metadata |
+
+#### Properties
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `connected` | `boolean` | Whether currently connected |
+| `client` | `NoLagSocket` | The injected core client |
+| `localUser` | `FeedUser \| null` | The current user |
+| `channels` | `Map<string, FeedChannel>` | All joined channels |
 
 #### Events
 
 | Event | Payload | Description |
 |-------|---------|-------------|
-| `connected` | — | Connected |
-| `disconnected` | — | Disconnected |
-| `reconnected` | — | Reconnected |
-| `error` | `Error` | Error |
+| `connected` | — | Connected to NoLag |
+| `disconnected` | `reason` | Disconnected |
+| `reconnecting` | — | Reconnect in progress |
+| `reconnected` | — | Reconnected after disconnect |
+| `error` | `Error` | Connection or protocol error |
 | `userOnline` | `FeedUser` | User came online |
 | `userOffline` | `FeedUser` | User went offline |
 
@@ -154,7 +202,7 @@ interface FeedPost {
   commentCount: number;
   likedByMe: boolean;
   timestamp: number;
-  status: "sending" | "sent" | "error";
+  status: "sending" | "sent" | "delivered";
   isReplay: boolean;
 }
 

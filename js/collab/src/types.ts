@@ -2,6 +2,8 @@
  * @nolag/collab — Public types
  */
 
+import type { NoLagSocket } from '@nolag/js-sdk';
+
 // ============ Primitives ============
 
 export type OperationType = 'insert' | 'delete' | 'replace' | 'format' | 'custom';
@@ -11,6 +13,12 @@ export type UserStatus = 'active' | 'idle' | 'viewing';
 // ============ Options ============
 
 export interface NoLagCollabOptions {
+  /**
+   * The injected core NoLag client (owned by the app, shared across wrappers).
+   * Create it once with `NoLag(...)` and pass it in — the wrapper never
+   * creates, connects, or closes the socket itself.
+   */
+  client: NoLagSocket;
   /** Display name for the local user */
   username: string;
   /** Optional avatar URL */
@@ -21,8 +29,6 @@ export interface NoLagCollabOptions {
   metadata?: Record<string, unknown>;
   /** NoLag app name (default: 'collab') */
   appName?: string;
-  /** WebSocket URL override */
-  url?: string;
   /** Maximum number of operations to cache per document (default: 1000) */
   maxOperationCache?: number;
   /** Milliseconds of inactivity before a user is marked idle (default: 60000) */
@@ -31,8 +37,6 @@ export interface NoLagCollabOptions {
   cursorThrottle?: number;
   /** Enable debug logging (default: false) */
   debug?: boolean;
-  /** Auto-reconnect on disconnect (default: true) */
-  reconnect?: boolean;
   /** Document names to auto-join on connect */
   documents?: string[];
 }
@@ -44,12 +48,10 @@ export interface ResolvedCollabOptions {
   color?: string;
   metadata?: Record<string, unknown>;
   appName: string;
-  url?: string;
   maxOperationCache: number;
   idleTimeout: number;
   cursorThrottle: number;
   debug: boolean;
-  reconnect: boolean;
   documents: string[];
 }
 
@@ -174,6 +176,7 @@ export interface CollabPresenceData {
 export interface CollabClientEvents {
   connected: [];
   disconnected: [reason: string];
+  reconnecting: [];
   reconnected: [];
   error: [error: Error];
   userOnline: [user: CollabUser];

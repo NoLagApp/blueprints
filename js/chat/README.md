@@ -24,14 +24,21 @@ npm install @nolag/js-sdk @nolag/chat
 
 ## Quick Start
 
+The app owns one core NoLag client; wrappers attach to it. Any number of
+wrapper SDKs (chat, notify, dash, ...) can share the same connection as
+long as each uses its own app.
+
 ```typescript
+import { NoLag } from "@nolag/js-sdk";
 import { NoLagChat } from "@nolag/chat";
 
-const chat = new NoLagChat("YOUR_ACTOR_TOKEN", {
-  username: "Alice",
-});
+// One client for the whole app. In a browser, use a token provider so the
+// SDK can mint fresh short-lived client tokens from your backend.
+const client = NoLag(async () => (await (await fetch("/api/nolag-token")).json()).token);
+const chat = new NoLagChat({ client, username: "Alice" });
 
-await chat.connect();
+await client.connect();   // the app owns the connection
+await chat.ready();       // wrapper setup done (identity, presence, rooms)
 
 // Join a room and send a message
 const room = chat.joinRoom("general");
@@ -52,7 +59,31 @@ room.startTyping(); // auto-stops after timeout
 room.on("typing", (users) => {
   console.log("Typing:", users.map((u) => u.username).join(", "));
 });
+
+// Teardown: the wrapper releases its handlers and topics; the app closes
+// the socket (never the other way around).
+chat.detach();
+client.disconnect();
 ```
+
+## Lifecycle
+
+- **Construction = attach.** The wrapper wires its handlers onto the injected
+  client immediately. If the client is already connected, setup runs on the
+  next microtask; otherwise it runs when the client's `connect` event fires.
+- **`ready()`** resolves once the first setup completed (identity, online
+  lobby, configured rooms). Auth failures surface via your own
+  `await client.connect()`, not via `ready()`.
+- **Reconnects are automatic.** The wrapper restores presence and reconciles
+  the online-user list, emitting only real deltas.
+- **`detach()`** removes exactly this wrapper's handlers and topics and never
+  touches the socket. It is terminal: construct a new instance to re-attach.
+  Detach while the client is still connected so server-side unsubscribes go
+  through. In frameworks, call it from your dispose hook (`onUnmounted`,
+  HMR dispose).
+- **One wrapper per (client, app).** Sharing a client across wrappers of
+  DIFFERENT apps is the intended pattern; two wrappers on the same app would
+  collide on topics and presence (the SDK warns if you do this).
 
 ## API Reference
 
@@ -61,28 +92,29 @@ room.on("typing", (users) => {
 #### Constructor
 
 ```typescript
-const chat = new NoLagChat(token: string, options: NoLagChatOptions);
+const chat = new NoLagChat(options: NoLagChatOptions);
 ```
 
 **Options:**
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
+| `client` | `NoLagSocket` | *required* | The injected core NoLag client |
 | `username` | `string` | *required* | Display name for this user |
 | `avatar` | `string` | — | Avatar URL |
 | `metadata` | `Record<string, unknown>` | — | Custom user data |
+| `appName` | `string` | `'chat'` | NoLag app for topic prefixes |
 | `rooms` | `string[]` | — | Auto-join these rooms on connect |
 | `typingTimeout` | `number` | `3000` | Ms before typing indicator auto-clears |
 | `maxMessageCache` | `number` | `500` | Max messages kept in memory per room |
-| `debug` | `boolean` | `false` | Enable debug logging |
-| `reconnect` | `boolean` | `true` | Auto-reconnect on disconnect |
+| `debug` | `boolean` | `false` | Enable wrapper debug logging |
 
 #### Methods
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `connect()` | `Promise<void>` | Connect to NoLag |
-| `disconnect()` | `void` | Disconnect |
+| `ready()` | `Promise<void>` | Resolves when wrapper setup completed |
+| `detach()` | `void` | Release handlers and topics (terminal; never closes the socket) |
 | `joinRoom(name)` | `ChatRoom` | Join a chat room |
 | `leaveRoom(name)` | `void` | Leave a room |
 | `getRooms()` | `ChatRoom[]` | Get all joined rooms |

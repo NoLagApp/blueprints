@@ -3,12 +3,14 @@ import { CollabDocument } from '../../src/CollabDocument';
 import type { CollabUser, ResolvedCollabOptions, CollabPresenceData } from '../../src/types';
 import type { RoomContext, MessageHandler } from '@nolag/js-sdk';
 
-// Mock RoomContext
+// Mock RoomContext. Handlers are stored in a Set per topic so we can verify
+// handler-specific removal (off(topic, handler) removes exactly one; a bare
+// off(topic) would remove all — the forbidden pattern).
 function createMockRoomContext(): RoomContext & {
-  _handlers: Map<string, MessageHandler>;
+  _handlers: Map<string, Set<MessageHandler>>;
   _fireMessage: (topic: string, data: unknown) => void;
 } {
-  const handlers = new Map<string, MessageHandler>();
+  const handlers = new Map<string, Set<MessageHandler>>();
   const ctx: any = {
     prefix: 'collab/my-doc',
     _handlers: handlers,
@@ -16,19 +18,21 @@ function createMockRoomContext(): RoomContext & {
     unsubscribe: vi.fn(),
     emit: vi.fn(),
     on: vi.fn((topic: string, handler: MessageHandler) => {
-      handlers.set(topic, handler);
+      if (!handlers.has(topic)) handlers.set(topic, new Set());
+      handlers.get(topic)!.add(handler);
       return ctx;
     }),
-    off: vi.fn((topic: string) => {
-      handlers.delete(topic);
+    off: vi.fn((topic: string, handler?: MessageHandler) => {
+      if (handler) handlers.get(topic)?.delete(handler);
+      else handlers.delete(topic);
       return ctx;
     }),
     setPresence: vi.fn(),
     getPresence: vi.fn(() => ({})),
     fetchPresence: vi.fn(() => Promise.resolve([])),
     _fireMessage(topic: string, data: unknown) {
-      const h = handlers.get(topic);
-      if (h) h(data, {});
+      const hs = handlers.get(topic);
+      if (hs) for (const h of [...hs]) h(data, {});
     },
   };
   return ctx;
@@ -54,7 +58,6 @@ function createOptions(): ResolvedCollabOptions {
     idleTimeout: 60000,
     cursorThrottle: 50,
     debug: false,
-    reconnect: true,
     documents: [],
   };
 }
@@ -68,7 +71,8 @@ describe('CollabDocument', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     ctx = createMockRoomContext();
-    doc = new CollabDocument('my-doc', ctx, createLocalUser(), createOptions(), noop);
+    // isConnected returns true so server unsubscribes are exercised in tests
+    doc = new CollabDocument('my-doc', ctx, createLocalUser(), createOptions(), noop, () => true);
   });
 
   afterEach(() => {

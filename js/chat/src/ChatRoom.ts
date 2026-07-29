@@ -39,8 +39,15 @@ export class ChatRoom extends EventEmitter<ChatRoomEvents> {
   private _typingManager: TypingManager;
   private _messageStore: MessageStore;
   private _log: (...args: unknown[]) => void;
+  private _isConnected: () => boolean;
   private _unreadCount = 0;
   private _active = false;
+
+  // Stored topic handler refs — cleanup removes exactly these, never all
+  // handlers for a topic (the client may be shared with other consumers).
+  private _onMessagesRef: ((data: unknown, meta: MessageMeta) => void) | null = null;
+  private _onTypingRef: ((data: unknown) => void) | null = null;
+  private _onStreamRef: ((data: unknown) => void) | null = null;
 
   /** @internal */
   constructor(
@@ -49,6 +56,7 @@ export class ChatRoom extends EventEmitter<ChatRoomEvents> {
     localUser: ChatUser,
     options: ResolvedChatOptions,
     log: (...args: unknown[]) => void,
+    isConnected: () => boolean,
   ) {
     super();
     this.name = name;
@@ -56,6 +64,7 @@ export class ChatRoom extends EventEmitter<ChatRoomEvents> {
     this._localUser = localUser;
     this._options = options;
     this._log = log;
+    this._isConnected = isConnected;
 
     this._presenceManager = new PresenceManager(localUser.actorTokenId);
     this._typingManager = new TypingManager(options.typingTimeout);
@@ -290,23 +299,26 @@ export class ChatRoom extends EventEmitter<ChatRoomEvents> {
     this._roomContext.subscribe(TOPIC_TYPING);
     this._roomContext.subscribe(TOPIC_STREAM);
 
-    // Listen for messages
-    this._roomContext.on(TOPIC_MESSAGES, (data: unknown, meta: MessageMeta) => {
+    // Listen for messages (refs stored for handler-specific removal)
+    this._onMessagesRef = (data: unknown, meta: MessageMeta) => {
       this._handleIncomingMessage(data, meta);
-    });
+    };
+    this._roomContext.on(TOPIC_MESSAGES, this._onMessagesRef);
 
     // Listen for typing
-    this._roomContext.on(TOPIC_TYPING, (data: unknown) => {
+    this._onTypingRef = (data: unknown) => {
       const { userId, typing } = data as { userId: string; typing: boolean };
       if (userId !== this._localUser.userId) {
         this._typingManager.handleRemote(userId, typing);
       }
-    });
+    };
+    this._roomContext.on(TOPIC_TYPING, this._onTypingRef);
 
     // Listen for live streamed messages (start / delta / abort)
-    this._roomContext.on(TOPIC_STREAM, (data: unknown) => {
+    this._onStreamRef = (data: unknown) => {
       this._handleStreamEvent(data);
-    });
+    };
+    this._roomContext.on(TOPIC_STREAM, this._onStreamRef);
   }
 
   /** @internal Set presence and fetch room members (active room only) */
@@ -389,12 +401,22 @@ export class ChatRoom extends EventEmitter<ChatRoomEvents> {
   _cleanup(): void {
     this._log('Room cleanup:', this.name);
 
-    this._roomContext.unsubscribe(TOPIC_MESSAGES);
-    this._roomContext.unsubscribe(TOPIC_TYPING);
-    this._roomContext.unsubscribe(TOPIC_STREAM);
-    this._roomContext.off(TOPIC_MESSAGES);
-    this._roomContext.off(TOPIC_TYPING);
-    this._roomContext.off(TOPIC_STREAM);
+    // Server unsubscribes need a live socket; skip when disconnected
+    // (best-effort — the core would no-op with an error callback anyway).
+    if (this._isConnected()) {
+      this._roomContext.unsubscribe(TOPIC_MESSAGES);
+      this._roomContext.unsubscribe(TOPIC_TYPING);
+      this._roomContext.unsubscribe(TOPIC_STREAM);
+    }
+
+    // Handler-specific removal only: the client may be shared, and a bare
+    // off(topic) would strip other consumers' handlers too.
+    if (this._onMessagesRef) this._roomContext.off(TOPIC_MESSAGES, this._onMessagesRef);
+    if (this._onTypingRef) this._roomContext.off(TOPIC_TYPING, this._onTypingRef);
+    if (this._onStreamRef) this._roomContext.off(TOPIC_STREAM, this._onStreamRef);
+    this._onMessagesRef = null;
+    this._onTypingRef = null;
+    this._onStreamRef = null;
 
     this._typingManager.dispose();
     this._messageStore.clear();
@@ -505,6 +527,9 @@ export class ChatRoom extends EventEmitter<ChatRoomEvents> {
       avatar: this._localUser.avatar,
       status: this._localUser.status,
       metadata: this._localUser.metadata,
+      // Scope tag: on a shared client, other apps' wrappers filter our
+      // presence out by this (and we filter theirs).
+      __scope: this._options.appName,
     };
     this._roomContext.setPresence(presenceData);
   }

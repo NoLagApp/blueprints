@@ -32,3 +32,32 @@ export function createLogger(prefix: string, enabled: boolean) {
 export function createTimestamp(): number {
   return Date.now();
 }
+
+// ============ Wrapper registry ============
+// One wrapper instance per (client, appName): two wrappers sharing an app on
+// one connection would collide on topics, presence and the lobby.
+// Warn (not throw): HMR and tests legitimately construct before disposing.
+
+const wrapperRegistry = new WeakMap<object, Map<string, string>>();
+
+/** Register a wrapper against a client + appName; warns on collision. */
+export function registerWrapper(client: object, appName: string, wrapperName: string): void {
+  let apps = wrapperRegistry.get(client);
+  if (!apps) {
+    apps = new Map();
+    wrapperRegistry.set(client, apps);
+  }
+  const existing = apps.get(appName);
+  if (existing) {
+    console.warn(
+      `[${wrapperName}] Another wrapper (${existing}) is already attached to this client for app "${appName}". ` +
+      `Use one wrapper per (client, app) — detach the other instance first.`,
+    );
+  }
+  apps.set(appName, wrapperName);
+}
+
+/** Release a wrapper's (client, appName) registration on detach. */
+export function releaseWrapper(client: object, appName: string): void {
+  wrapperRegistry.get(client)?.delete(appName);
+}

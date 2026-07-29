@@ -2,9 +2,18 @@
  * @nolag/feed — Public types
  */
 
+import type { NoLagSocket } from '@nolag/js-sdk';
+
 // ============ Options ============
 
 export interface NoLagFeedOptions {
+  /**
+   * The injected NoLag core client. The app owns its lifecycle: create it
+   * with `NoLag(tokenOrProvider)`, call `connect()`/`disconnect()` yourself.
+   * The wrapper only attaches protocol behavior on top and releases it
+   * again via `detach()`. One wrapper per (client, appName).
+   */
+  client: NoLagSocket;
   /** Display name for this user */
   username: string;
   /** Avatar URL */
@@ -13,17 +22,13 @@ export interface NoLagFeedOptions {
   metadata?: Record<string, unknown>;
   /** NoLag app name (default: 'feed') */
   appName?: string;
-  /** WebSocket URL override */
-  url?: string;
   /** Max posts kept in memory per channel (default: 200) */
   maxPostCache?: number;
   /** Max comments kept in memory per post (default: 100) */
   maxCommentCache?: number;
   /** Enable debug logging (default: false) */
   debug?: boolean;
-  /** Auto-reconnect on disconnect (default: true) */
-  reconnect?: boolean;
-  /** List of channels to subscribe to on connect */
+  /** List of channels to subscribe to on connect (posts received in all; presence only in active channel) */
   channels?: string[];
 }
 
@@ -32,11 +37,9 @@ export interface ResolvedFeedOptions {
   avatar?: string;
   metadata?: Record<string, unknown>;
   appName: string;
-  url?: string;
   maxPostCache: number;
   maxCommentCache: number;
   debug: boolean;
-  reconnect: boolean;
   channels: string[];
 }
 
@@ -155,6 +158,7 @@ export interface FeedPresenceData {
 export interface FeedClientEvents {
   connected: [];
   disconnected: [reason: string];
+  reconnecting: [];
   reconnected: [];
   error: [error: Error];
   userOnline: [user: FeedUser];
