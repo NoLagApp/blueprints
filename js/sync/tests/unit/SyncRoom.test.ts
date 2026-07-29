@@ -49,7 +49,6 @@ function createOptions(): ResolvedSyncOptions {
     userId: 'local-user-id',
     appName: 'sync',
     debug: false,
-    reconnect: true,
     collections: [],
   };
 }
@@ -62,7 +61,7 @@ describe('SyncRoom', () => {
 
   beforeEach(() => {
     ctx = createMockRoomContext();
-    room = new SyncRoom('todos', ctx, createLocalCollaborator(), createOptions(), noop);
+    room = new SyncRoom('todos', ctx, createLocalCollaborator(), createOptions(), noop, () => true);
   });
 
   // ============ _subscribe ============
@@ -447,12 +446,26 @@ describe('SyncRoom', () => {
   // ============ _cleanup ============
 
   describe('_cleanup', () => {
-    it('should unsubscribe from changes topic', () => {
+    it('should unsubscribe from changes topic and remove its handler by ref', () => {
       room._subscribe();
       room._cleanup();
 
       expect(ctx.unsubscribe).toHaveBeenCalledWith('changes');
-      expect(ctx.off).toHaveBeenCalledWith('changes');
+      // Handler-specific removal: off(topic, handler), never bare off(topic).
+      expect(ctx.off).toHaveBeenCalledWith('changes', expect.any(Function));
+    });
+
+    it('should skip server unsubscribe when disconnected', () => {
+      const disconnectedRoom = new SyncRoom(
+        'todos', ctx, createLocalCollaborator(), createOptions(), noop, () => false,
+      );
+      disconnectedRoom._subscribe();
+      (ctx.unsubscribe as ReturnType<typeof vi.fn>).mockClear();
+      disconnectedRoom._cleanup();
+
+      expect(ctx.unsubscribe).not.toHaveBeenCalled();
+      // Handler is still removed by ref even while disconnected.
+      expect(ctx.off).toHaveBeenCalledWith('changes', expect.any(Function));
     });
 
     it('should remove all event listeners', () => {

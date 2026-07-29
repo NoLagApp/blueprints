@@ -2,6 +2,8 @@
  * @nolag/queue — Public types
  */
 
+import type { NoLagSocket } from '@nolag/js-sdk';
+
 // ============ Roles & Enums ============
 
 export type WorkerRole = 'producer' | 'worker' | 'monitor';
@@ -13,6 +15,11 @@ export type JobPriority = 'low' | 'normal' | 'high' | 'critical';
 // ============ Options ============
 
 export interface NoLagQueueOptions {
+  /**
+   * The core NoLag client to attach to (owned by the app, not the wrapper).
+   * REQUIRED. The wrapper never connects or disconnects the socket.
+   */
+  client: NoLagSocket;
   /** Stable worker ID for this client (default: auto-generated) */
   workerId?: string;
   /** Role this client plays in the queue (default: 'monitor') */
@@ -23,18 +30,15 @@ export interface NoLagQueueOptions {
   metadata?: Record<string, unknown>;
   /** NoLag app name (default: 'queue') */
   appName?: string;
-  /** WebSocket URL override */
-  url?: string;
   /** Maximum number of jobs to cache in memory (default: 1000) */
   maxJobCache?: number;
   /** Enable debug logging (default: false) */
   debug?: boolean;
-  /** Auto-reconnect on disconnect (default: true) */
-  reconnect?: boolean;
   /** Queue names this client should participate in */
   queues?: string[];
   /**
-   * Load balance group name for workers.
+   * Load balance group name for workers. This is a SUBSCRIBE-level option,
+   * not a connection option — it flows into each queue's job-topic subscribe.
    * Workers in the same group receive jobs round-robin (only ONE worker gets each job).
    * Default: 'queue-workers-{queueName}' — all workers on the same queue share jobs automatically.
    * Set a custom group to partition workers (e.g., by region or capability).
@@ -49,10 +53,8 @@ export interface ResolvedQueueOptions {
   concurrency: number;
   metadata?: Record<string, unknown>;
   appName: string;
-  url?: string;
   maxJobCache: number;
   debug: boolean;
-  reconnect: boolean;
   queues: string[];
   loadBalanceGroup?: string;
 }
@@ -158,6 +160,7 @@ export interface QueuePresenceData {
 export interface QueueClientEvents {
   connected: [];
   disconnected: [reason: string];
+  reconnecting: [];
   reconnected: [];
   error: [error: Error];
   workerOnline: [worker: QueueWorker];

@@ -33,6 +33,13 @@ export class DeviceGroup extends EventEmitter<DeviceGroupEvents> {
   private _commandManager: CommandManager;
   private _receivedCommands = new Map<string, DeviceCommand>();
   private _log: (...args: unknown[]) => void;
+  private _isConnected: () => boolean;
+
+  // Stored topic handler refs — cleanup removes exactly these, never all
+  // handlers for a topic (the client may be shared with other consumers).
+  private _onTelemetryRef: ((data: unknown) => void) | null = null;
+  private _onCommandsRef: ((data: unknown) => void) | null = null;
+  private _onCmdAckRef: ((data: unknown) => void) | null = null;
 
   /** @internal */
   constructor(
@@ -41,6 +48,7 @@ export class DeviceGroup extends EventEmitter<DeviceGroupEvents> {
     localDevice: Device,
     options: ResolvedIoTOptions,
     log: (...args: unknown[]) => void,
+    isConnected: () => boolean,
   ) {
     super();
     this.name = name;
@@ -48,6 +56,7 @@ export class DeviceGroup extends EventEmitter<DeviceGroupEvents> {
     this._localDevice = localDevice;
     this._options = options;
     this._log = log;
+    this._isConnected = isConnected;
 
     this._presenceManager = new PresenceManager(localDevice.actorTokenId);
     this._telemetryStore = new TelemetryStore(options.maxTelemetryPoints);
@@ -199,17 +208,22 @@ export class DeviceGroup extends EventEmitter<DeviceGroupEvents> {
       this._roomContext.subscribe(TOPIC_CMD_ACK);
     }
 
-    this._roomContext.on(TOPIC_TELEMETRY, (data: unknown) => {
+    // Listeners: refs stored for handler-specific removal (the client may be
+    // shared with other consumers on the same topic).
+    this._onTelemetryRef = (data: unknown) => {
       this._handleIncomingTelemetry(data);
-    });
+    };
+    this._roomContext.on(TOPIC_TELEMETRY, this._onTelemetryRef);
 
-    this._roomContext.on(TOPIC_COMMANDS, (data: unknown) => {
+    this._onCommandsRef = (data: unknown) => {
       this._handleIncomingCommand(data);
-    });
+    };
+    this._roomContext.on(TOPIC_COMMANDS, this._onCommandsRef);
 
-    this._roomContext.on(TOPIC_CMD_ACK, (data: unknown) => {
+    this._onCmdAckRef = (data: unknown) => {
       this._handleIncomingCmdAck(data);
-    });
+    };
+    this._roomContext.on(TOPIC_CMD_ACK, this._onCmdAckRef);
   }
 
   /** @internal Set presence and fetch existing group members */
@@ -268,14 +282,24 @@ export class DeviceGroup extends EventEmitter<DeviceGroupEvents> {
   _cleanup(): void {
     this._log('Group cleanup:', this.name);
 
-    this._roomContext.unsubscribe(TOPIC_TELEMETRY);
-    this._roomContext.unsubscribe(TOPIC_COMMANDS);
-    this._roomContext.unsubscribe(TOPIC_CMD_ACK);
+    // Server unsubscribes need a live socket; skip when disconnected
+    // (best-effort — the core would no-op with an error callback anyway).
+    if (this._isConnected()) {
+      this._roomContext.unsubscribe(TOPIC_TELEMETRY);
+      this._roomContext.unsubscribe(TOPIC_COMMANDS);
+      this._roomContext.unsubscribe(TOPIC_CMD_ACK);
+    }
 
-    this._roomContext.off(TOPIC_TELEMETRY);
-    this._roomContext.off(TOPIC_COMMANDS);
-    this._roomContext.off(TOPIC_CMD_ACK);
+    // Handler-specific removal only: the client may be shared, and a bare
+    // off(topic) would strip other consumers' handlers too.
+    if (this._onTelemetryRef) this._roomContext.off(TOPIC_TELEMETRY, this._onTelemetryRef);
+    if (this._onCommandsRef) this._roomContext.off(TOPIC_COMMANDS, this._onCommandsRef);
+    if (this._onCmdAckRef) this._roomContext.off(TOPIC_CMD_ACK, this._onCmdAckRef);
+    this._onTelemetryRef = null;
+    this._onCommandsRef = null;
+    this._onCmdAckRef = null;
 
+    // Clears all pending command-timeout timers and rejects orphaned commands.
     this._commandManager.dispose();
     this._receivedCommands.clear();
     this._presenceManager.clear();
@@ -328,6 +352,9 @@ export class DeviceGroup extends EventEmitter<DeviceGroupEvents> {
       deviceName: this._localDevice.deviceName,
       role: this._localDevice.role,
       metadata: this._localDevice.metadata,
+      // Scope tag: on a shared client, other apps' wrappers filter our
+      // presence out by this (and we filter theirs).
+      __scope: this._options.appName,
     };
     this._roomContext.setPresence(presenceData);
   }

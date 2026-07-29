@@ -1,14 +1,23 @@
-import type { NoLagOptions } from "@nolag/js-sdk";
+import type { NoLagSocket } from "@nolag/js-sdk";
 
 // ============================================================
 // Options
 // ============================================================
 
 export interface NoLagAgentsOptions {
+  /**
+   * The injected core NoLag client. The app owns and connects it; the wrapper
+   * attaches to it at construction and releases it via `detach()`. Required.
+   */
+  client: NoLagSocket;
   /** NoLag app slug for the agents workflow */
   appName?: string;
   /** Unique agent ID (defaults to a generated UUID) */
   agentId?: string;
+  /** Agent display name (advertised via presence; defaults to agentId) */
+  name?: string;
+  /** Agent role: orchestrator, agent, observer, human, tool-server (defaults to "agent") */
+  role?: string;
   /** Enable debug logging */
   debug?: boolean;
   /** Rooms to auto-join on connect */
@@ -17,18 +26,17 @@ export interface NoLagAgentsOptions {
   lobby?: string;
   /** Agent presence data (advertised to other agents in the room) */
   presence?: AgentPresenceData;
-  /** Additional NoLag client options */
-  clientOptions?: Partial<NoLagOptions>;
 }
 
 export interface ResolvedAgentsOptions {
   appName: string;
   agentId: string;
+  name?: string;
+  role?: string;
   debug: boolean;
   rooms: string[];
   lobby?: string;
   presence?: AgentPresenceData;
-  clientOptions?: Partial<NoLagOptions>;
 }
 
 // ============================================================
@@ -176,6 +184,7 @@ export interface AgentPresenceData {
 export interface AgentClientEvents {
   connected: [];
   disconnected: [reason: string];
+  reconnecting: [];
   reconnected: [];
   error: [error: Error];
 }

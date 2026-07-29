@@ -24,12 +24,21 @@ npm install @nolag/js-sdk @nolag/dash
 
 ## Quick Start
 
+The app owns one core NoLag client; wrappers attach to it. Any number of
+wrapper SDKs (dash, chat, notify, ...) can share the same connection as
+long as each uses its own app.
+
 ```typescript
+import { NoLag } from "@nolag/js-sdk";
 import { NoLagDash } from "@nolag/dash";
 
-const dash = new NoLagDash("YOUR_ACTOR_TOKEN");
+// One client for the whole app. In a browser, use a token provider so the
+// SDK can mint fresh short-lived client tokens from your backend.
+const client = NoLag(async () => (await (await fetch("/api/nolag-token")).json()).token);
+const dash = new NoLagDash({ client, username: "Alice" });
 
-await dash.connect();
+await client.connect();   // the app owns the connection
+await dash.ready();       // wrapper setup done (identity, presence, panels)
 
 const panel = dash.joinPanel("server-metrics");
 
@@ -53,7 +62,36 @@ panel.on("widgetUpdate", (widget) => {
 // Aggregations
 const agg = panel.getAggregation("cpu", 60_000); // last 60s
 console.log(`CPU avg: ${agg.avg}%, max: ${agg.max}%`);
+
+// See who's watching
+dash.on("viewerOnline", (viewer) => {
+  console.log(`${viewer.username} is watching`);
+});
+
+// Teardown: the wrapper releases its handlers and topics; the app closes
+// the socket (never the other way around).
+dash.detach();
+client.disconnect();
 ```
+
+## Lifecycle
+
+- **Construction = attach.** The wrapper wires its handlers onto the injected
+  client immediately. If the client is already connected, setup runs on the
+  next microtask; otherwise it runs when the client's `connect` event fires.
+- **`ready()`** resolves once the first setup completed (identity, online
+  lobby, configured panels). Auth failures surface via your own
+  `await client.connect()`, not via `ready()`.
+- **Reconnects are automatic.** The wrapper restores presence and reconciles
+  the online-viewer list, emitting only real deltas.
+- **`detach()`** removes exactly this wrapper's handlers and topics and never
+  touches the socket. It is terminal: construct a new instance to re-attach.
+  Detach while the client is still connected so server-side unsubscribes go
+  through. In frameworks, call it from your dispose hook (`onUnmounted`,
+  HMR dispose).
+- **One wrapper per (client, app).** Sharing a client across wrappers of
+  DIFFERENT apps is the intended pattern; two wrappers on the same app would
+  collide on topics and presence (the SDK warns if you do this).
 
 ## API Reference
 
@@ -62,38 +100,50 @@ console.log(`CPU avg: ${agg.avg}%, max: ${agg.max}%`);
 #### Constructor
 
 ```typescript
-const dash = new NoLagDash(token: string, options?: NoLagDashOptions);
+const dash = new NoLagDash(options: NoLagDashOptions);
 ```
 
 **Options:**
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `username` | `string` | — | Display name |
-| `metadata` | `Record<string, unknown>` | — | Custom data |
+| `client` | `NoLagSocket` | *required* | The injected core NoLag client |
+| `username` | `string` | — | Display name for this viewer |
+| `metadata` | `Record<string, unknown>` | — | Custom viewer data |
+| `appName` | `string` | `'dash'` | NoLag app for topic prefixes |
 | `panels` | `string[]` | — | Auto-join these panels on connect |
-| `maxMetricPoints` | `number` | — | Max metric points kept in memory |
-| `aggregationWindow` | `number` | — | Default aggregation window (ms) |
-| `debug` | `boolean` | `false` | Enable debug logging |
-| `reconnect` | `boolean` | `true` | Auto-reconnect on disconnect |
+| `maxMetricPoints` | `number` | `1000` | Max metric points kept in memory per stream |
+| `aggregationWindow` | `number` | `60000` | Default aggregation window (ms) |
+| `debug` | `boolean` | `false` | Enable wrapper debug logging |
 
 #### Methods
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `connect()` | `Promise<void>` | Connect to NoLag |
-| `disconnect()` | `void` | Disconnect |
-| `joinPanel(name)` | `DashboardPanel` | Join a dashboard panel |
+| `ready()` | `Promise<void>` | Resolves when wrapper setup completed |
+| `detach()` | `void` | Release handlers and topics (terminal; never closes the socket) |
+| `joinPanel(name, opts?)` | `DashboardPanel` | Join a dashboard panel |
 | `leavePanel(name)` | `void` | Leave a panel |
+| `getPanels()` | `DashboardPanel[]` | Get all joined panels |
+| `getOnlineViewers()` | `DashboardViewer[]` | Get all online viewers |
+
+#### Properties
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `connected` | `boolean` | Whether currently connected |
+| `localViewer` | `DashboardViewer \| null` | The current viewer |
+| `panels` | `Map<string, DashboardPanel>` | All joined panels |
 
 #### Events
 
 | Event | Payload | Description |
 |-------|---------|-------------|
-| `connected` | — | Connected |
-| `disconnected` | — | Disconnected |
-| `reconnected` | — | Reconnected |
-| `error` | `Error` | Error |
+| `connected` | — | Connected to NoLag |
+| `disconnected` | `string` | Disconnected (reason) |
+| `reconnecting` | — | Reconnect attempt started |
+| `reconnected` | — | Reconnected after disconnect |
+| `error` | `Error` | Connection or protocol error |
 | `viewerOnline` | `DashboardViewer` | Viewer came online |
 | `viewerOffline` | `DashboardViewer` | Viewer went offline |
 

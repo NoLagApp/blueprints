@@ -66,7 +66,7 @@ describe('ChatRoom', () => {
 
   beforeEach(() => {
     ctx = createMockRoomContext();
-    room = new ChatRoom('general', ctx, createLocalUser(), createOptions(), noop);
+    room = new ChatRoom('general', ctx, createLocalUser(), createOptions(), noop, () => true);
   });
 
   describe('_subscribe', () => {
@@ -311,8 +311,8 @@ describe('ChatRoom', () => {
 
       expect(ctx.unsubscribe).toHaveBeenCalledWith('messages');
       expect(ctx.unsubscribe).toHaveBeenCalledWith('_typing');
-      expect(ctx.off).toHaveBeenCalledWith('messages');
-      expect(ctx.off).toHaveBeenCalledWith('_typing');
+      expect(ctx.off).toHaveBeenCalledWith('messages', expect.any(Function));
+      expect(ctx.off).toHaveBeenCalledWith('_typing', expect.any(Function));
     });
   });
 });

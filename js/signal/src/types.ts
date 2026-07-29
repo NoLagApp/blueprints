@@ -2,28 +2,31 @@
  * @nolag/signal — Public types
  */
 
+import type { NoLagSocket } from '@nolag/js-sdk';
+
 // ============ Options ============
 
 export interface NoLagSignalOptions {
+  /**
+   * The injected NoLag core client. The app owns its lifecycle: create it
+   * with `NoLag(tokenOrProvider)`, call `connect()`/`disconnect()` yourself.
+   * The wrapper only attaches protocol behavior on top and releases it
+   * again via `detach()`. One wrapper per (client, appName).
+   */
+  client: NoLagSocket;
   /** Custom metadata attached to peer presence */
   metadata?: Record<string, unknown>;
   /** NoLag app name (default: 'signal') */
   appName?: string;
-  /** WebSocket URL override */
-  url?: string;
-  /** Enable debug logging (default: false) */
+  /** Enable debug logging for the wrapper (default: false) */
   debug?: boolean;
-  /** Auto-reconnect on disconnect (default: true) */
-  reconnect?: boolean;
 }
 
 /** Resolved options with defaults applied */
 export interface ResolvedSignalOptions {
   metadata?: Record<string, unknown>;
   appName: string;
-  url?: string;
   debug: boolean;
-  reconnect: boolean;
 }
 
 // ============ Signal Types ============
@@ -69,6 +72,7 @@ export interface Peer {
 export interface SignalClientEvents {
   connected: [];
   disconnected: [reason: string];
+  reconnecting: [];
   reconnected: [];
   error: [error: Error];
   peerOnline: [peer: Peer];

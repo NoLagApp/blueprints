@@ -48,7 +48,6 @@ function createOptions(): ResolvedSignalOptions {
   return {
     appName: 'signal',
     debug: false,
-    reconnect: true,
   };
 }
 
@@ -60,7 +59,7 @@ describe('SignalRoom', () => {
 
   beforeEach(() => {
     ctx = createMockRoomContext();
-    room = new SignalRoom('call-room', ctx, createLocalPeer(), createOptions(), noop);
+    room = new SignalRoom('call-room', ctx, createLocalPeer(), createOptions(), noop, () => true);
   });
 
   describe('_subscribe', () => {
@@ -294,12 +293,13 @@ describe('SignalRoom', () => {
   });
 
   describe('_cleanup', () => {
-    it('should unsubscribe from signaling topic', () => {
+    it('should unsubscribe from signaling topic and remove its handler by ref', () => {
       room._subscribe();
       room._cleanup();
 
       expect(ctx.unsubscribe).toHaveBeenCalledWith('signaling');
-      expect(ctx.off).toHaveBeenCalledWith('signaling');
+      // Handler-specific removal: off(topic, handler), never bare off(topic).
+      expect(ctx.off).toHaveBeenCalledWith('signaling', expect.any(Function));
     });
 
     it('should remove all event listeners', () => {

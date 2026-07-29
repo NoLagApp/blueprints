@@ -2,21 +2,26 @@
  * @nolag/notify — Public types
  */
 
+import type { NoLagSocket } from '@nolag/js-sdk';
+
 // ============ Options ============
 
 export interface NoLagNotifyOptions {
+  /**
+   * The injected NoLag core client. The app owns its lifecycle: create it
+   * with `NoLag(tokenOrProvider)`, call `connect()`/`disconnect()` yourself.
+   * The wrapper only attaches protocol behavior on top and releases it
+   * again via `detach()`. One wrapper per (client, appName).
+   */
+  client: NoLagSocket;
   /** Custom metadata attached to user presence */
   metadata?: Record<string, unknown>;
   /** NoLag app name (default: 'notify') */
   appName?: string;
-  /** WebSocket URL override */
-  url?: string;
   /** Max notifications kept in memory per channel (default: 500) */
   maxNotificationCache?: number;
   /** Enable debug logging (default: false) */
   debug?: boolean;
-  /** Auto-reconnect on disconnect (default: true) */
-  reconnect?: boolean;
   /** List of channels to subscribe to on connect */
   channels?: string[];
 }
@@ -24,10 +29,8 @@ export interface NoLagNotifyOptions {
 export interface ResolvedNotifyOptions {
   metadata?: Record<string, unknown>;
   appName: string;
-  url?: string;
   maxNotificationCache: number;
   debug: boolean;
-  reconnect: boolean;
   channels: string[];
 }
 
@@ -86,6 +89,7 @@ export interface NotifyPresenceData {
 export interface NotifyClientEvents {
   connected: [];
   disconnected: [reason: string];
+  reconnecting: [];
   reconnected: [];
   error: [error: Error];
   notification: [notification: Notification];

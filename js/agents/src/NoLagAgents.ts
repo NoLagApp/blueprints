@@ -1,16 +1,20 @@
-import type { NoLagOptions } from "@nolag/js-sdk";
-import { NoLag } from "@nolag/js-sdk";
+import type {
+  LobbyContext,
+  LobbyPresenceEvent,
+  LobbyPresenceState,
+  ActorPresence,
+  NoLagSocket,
+} from "@nolag/js-sdk";
 import { EventEmitter } from "./EventEmitter";
 import { AgentRoom } from "./AgentRoom";
-import { createLogger, generateId } from "./utils";
-import { DEFAULT_APP_NAME, DEFAULT_ROOM } from "./constants";
+import { createLogger, generateId, registerWrapper, releaseWrapper } from "./utils";
+import { DEFAULT_APP_NAME, DEFAULT_ROOM, LOBBY_REFRESH_DELAY_MS } from "./constants";
 import type {
   NoLagAgentsOptions,
   ResolvedAgentsOptions,
   AgentClientEvents,
+  AgentPresenceData,
 } from "./types";
-
-type NoLagClient = ReturnType<typeof NoLag>;
 
 /**
  * NoLagAgents — high-level agent coordination SDK built on @nolag/js-sdk.
@@ -18,56 +22,142 @@ type NoLagClient = ReturnType<typeof NoLag>;
  * Provides typed rooms for multi-agent patterns: Handoff, Blackboard,
  * Inbox, Tools, Approval, and Observe.
  *
+ * The wrapper NEVER manages the connection. The app owns one core NoLag
+ * client (shared by any number of wrappers on distinct apps) and the
+ * wrapper attaches to it at construction and releases it via `detach()`.
+ *
  * @example
  * ```typescript
+ * import { NoLag } from '@nolag/js-sdk';
  * import { NoLagAgents } from '@nolag/agents';
  *
- * const agents = new NoLagAgents(token, {
+ * const client = NoLag(async () => (await (await fetch('/api/nolag-token')).json()).token);
+ * const agents = new NoLagAgents({
+ *   client,
  *   appName: 'my-workflow',
  *   agentId: 'worker-1',
  *   presence: { name: 'worker-1', role: 'agent', capabilities: ['summarize'] },
  * });
- * await agents.connect();
+ *
+ * await client.connect();   // the app owns the connection
+ * await agents.ready();     // wrapper setup done (identity, rooms, lobby)
  *
  * const room = agents.room('default-workflow');
- * room.handoff.onTask(['summarize'], async (task, respond) => {
- *   const result = await summarize(task.payload);
- *   respond('success', { result });
- * });
+ * room.on('task', (task) => console.log('New task:', task));
+ *
+ * agents.detach();          // wrapper releases its handlers and topics
+ * client.disconnect();      // the app closes the socket
  * ```
  */
 export class NoLagAgents extends EventEmitter<AgentClientEvents> {
-  private _token: string;
+  private _client: NoLagSocket;
   private _options: ResolvedAgentsOptions;
-  private _client: NoLagClient | null = null;
-  private _appContext: any = null;
   private _rooms = new Map<string, AgentRoom>();
+  private _lobby: LobbyContext | null = null;
   private _log: (...args: unknown[]) => void;
-  private _connected = false;
 
-  constructor(token: string, options: NoLagAgentsOptions = {}) {
+  // Lifecycle: one setup run per connection epoch; detach is terminal.
+  private _epoch = 0;
+  private _detached = false;
+  private _isReady = false;
+  private _readyResolve!: () => void;
+  private _readyReject!: (err: Error) => void;
+  private _readyPromise: Promise<void>;
+  private _lobbyRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // Stored client handler refs. INVARIANT: every client.on() below has a
+  // matching client.off() in detach() — never bare off(event), never inline
+  // closures on the client.
+  private _onConnectRef = () => this._onConnect();
+  private _onDisconnectRef = (reason: string) => {
+    this._log("disconnected:", reason);
+    this.emit("disconnected", reason);
+  };
+  private _onReconnectRef = () => {
+    this._log("reconnecting...");
+    this.emit("reconnecting");
+  };
+  private _onErrorRef = (error: Error) => {
+    this._log("error:", error?.message ?? error);
+    this.emit("error", error);
+  };
+  private _onPresenceJoinRef = (data: ActorPresence) => this._handleRoomPresenceJoin(data);
+  private _onPresenceLeaveRef = (data: ActorPresence) => this._handleRoomPresenceLeave(data);
+  private _onPresenceUpdateRef = (data: ActorPresence) => this._handleRoomPresenceUpdate(data);
+  private _onLobbyJoinRef = (data: unknown) => this._handleLobbyJoin(data as LobbyPresenceEvent);
+  private _onLobbyLeaveRef = (data: unknown) => this._handleLobbyLeave(data as LobbyPresenceEvent);
+  private _onLobbyUpdateRef = (data: unknown) => this._handleLobbyUpdate(data as LobbyPresenceEvent);
+
+  constructor(options: NoLagAgentsOptions) {
     super();
-    this._token = token;
+
+    if (!options?.client) {
+      throw new TypeError(
+        "NoLagAgents requires an injected NoLag client: new NoLagAgents({ client, ... })",
+      );
+    }
+
+    this._client = options.client;
+
     this._options = {
       appName: options.appName ?? DEFAULT_APP_NAME,
       agentId: options.agentId ?? generateId(),
+      name: options.name,
+      role: options.role,
       debug: options.debug ?? false,
       rooms: options.rooms ?? [DEFAULT_ROOM],
       lobby: options.lobby,
-      presence: options.presence,
-      clientOptions: options.clientOptions,
+      presence: options.presence ?? this._presenceFromIdentity(options),
     };
+
     this._log = createLogger("NoLagAgents", this._options.debug);
+
+    this._readyPromise = new Promise<void>((resolve, reject) => {
+      this._readyResolve = resolve;
+      this._readyReject = reject;
+    });
+    // ready() rejection is only meaningful to callers that await it
+    this._readyPromise.catch(() => {});
+
+    registerWrapper(this._client, this._options.appName, "NoLagAgents");
+
+    // Construction = attach: wire everything now, with stored refs.
+    this._client.on("connect", this._onConnectRef);
+    this._client.on("disconnect", this._onDisconnectRef);
+    this._client.on("reconnect", this._onReconnectRef);
+    this._client.on("error", this._onErrorRef);
+    this._client.on("presence:join", this._onPresenceJoinRef);
+    this._client.on("presence:leave", this._onPresenceLeaveRef);
+    this._client.on("presence:update", this._onPresenceUpdateRef);
+    this._client.on("lobbyPresence:join", this._onLobbyJoinRef);
+    this._client.on("lobbyPresence:leave", this._onLobbyLeaveRef);
+    this._client.on("lobbyPresence:update", this._onLobbyUpdateRef);
+
+    // Attach-to-connected: if the client is already authenticated, run setup.
+    // The microtask lets the caller wire wrapper event handlers synchronously
+    // first; a racing real 'connect' event wins via the epoch guard.
+    queueMicrotask(() => {
+      if (this._epoch === 0 && !this._detached && this._client.connected) {
+        this._onConnect();
+      }
+    });
   }
+
+  // ============ Public Properties ============
 
   /** The agent's unique ID */
   get agentId(): string {
     return this._options.agentId;
   }
 
-  /** Whether the client is connected */
+  /** Whether the underlying connection is established (connected ≠ ready) */
   get connected(): boolean {
-    return this._connected;
+    return !this._detached && this._client.connected;
+  }
+
+  /** The injected core client (owned by the app, not the wrapper) */
+  get client(): NoLagSocket {
+    return this._client;
   }
 
   /** Map of joined rooms */
@@ -75,165 +165,337 @@ export class NoLagAgents extends EventEmitter<AgentClientEvents> {
     return this._rooms;
   }
 
-  /** Connect to NoLag and join configured rooms */
-  async connect(): Promise<void> {
-    this._log("connecting...");
+  // ============ Lifecycle ============
 
-    this._client = NoLag(this._token, {
-      ...(this._options as any).clientOptions,
-    });
-
-    this._appContext = this._client!.setApp(this._options.appName);
-
-    this._client!.on("connected" as any, () => {
-      this._connected = true;
-      this._log("connected");
-      this.emit("connected");
-    });
-
-    this._client!.on("disconnected" as any, (reason: string) => {
-      this._connected = false;
-      this._log("disconnected:", reason);
-      this.emit("disconnected", reason);
-    });
-
-    this._client!.on("reconnected" as any, () => {
-      this._connected = true;
-      this._log("reconnected");
-      this.emit("reconnected");
-    });
-
-    this._client!.on("error" as any, (err: Error) => {
-      this._log("error:", err.message);
-      this.emit("error", err);
-    });
-
-    await this._client!.connect();
-
-    // Auto-join configured rooms
-    for (const roomName of this._options.rooms) {
-      this.room(roomName);
-    }
-
-    // Auto-subscribe to lobby if configured (for cross-room presence observation)
-    if (this._options.lobby) {
-      await this.subscribeLobby(this._options.lobby);
-    }
+  /**
+   * Resolves once the wrapper's first setup completed (identity, configured
+   * rooms and — when configured — the lobby ready; equivalently, once
+   * 'connected' has fired). Rejects only if detach() is called before that.
+   * Client auth failures surface via the app's own `await client.connect()`.
+   */
+  ready(): Promise<void> {
+    return this._readyPromise;
   }
 
   /**
-   * Subscribe to a lobby for cross-room presence observation.
-   * Lobby presence events are forwarded to all AgentRooms.
-   *
-   * Returns the initial presence snapshot.
+   * Detach from the client: remove every handler this wrapper added,
+   * unsubscribe its topics and lobby (when connected), clear state.
+   * Terminal and idempotent; never touches the socket. To use agents again,
+   * construct a new instance.
    */
-  async subscribeLobby(lobbySlug: string): Promise<Record<string, Record<string, unknown>>> {
-    if (!this._appContext) {
-      throw new Error("Not connected. Call connect() before subscribing to lobbies.");
+  detach(): void {
+    if (this._detached) return;
+    this._log("detaching...");
+    this._detached = true;
+    this._epoch++; // aborts any in-flight setup at its next checkpoint
+
+    if (this._lobbyRefreshTimer) {
+      clearTimeout(this._lobbyRefreshTimer);
+      this._lobbyRefreshTimer = null;
     }
 
-    this._log(`subscribing to lobby: ${lobbySlug}`);
-    const lobby = this._appContext.setLobby(lobbySlug);
+    // Remove all client handlers by stored ref
+    this._client.off("connect", this._onConnectRef);
+    this._client.off("disconnect", this._onDisconnectRef);
+    this._client.off("reconnect", this._onReconnectRef);
+    this._client.off("error", this._onErrorRef);
+    this._client.off("presence:join", this._onPresenceJoinRef);
+    this._client.off("presence:leave", this._onPresenceLeaveRef);
+    this._client.off("presence:update", this._onPresenceUpdateRef);
+    this._client.off("lobbyPresence:join", this._onLobbyJoinRef);
+    this._client.off("lobbyPresence:leave", this._onLobbyLeaveRef);
+    this._client.off("lobbyPresence:update", this._onLobbyUpdateRef);
 
-    // Listen for lobby presence events on the client
-    // (lobby.on() uses lobby UUID internally which may not match)
-    this._client!.on('lobbyPresence:join' as any, (evt: any) => {
-      const id = evt?.actorId;
-      const data = evt?.data || {};
-      if (id) {
-        this._log(`lobby presence:join — ${data.name || id}`);
-        for (const room of this._rooms.values()) {
-          const agents = (room as any)._agents as Map<string, any>;
-          if (!agents.has(id)) {
-            agents.set(id, {
-              actorId: id,
-              name: data.name || id,
-              role: data.role || 'agent',
-              capabilities: data.capabilities || [],
-              metadata: data.metadata,
-              connectedAt: Date.now(),
-            });
-          }
-          room._emitPresence('presenceJoin', id, data);
-        }
+    // Rooms: handler-specific off + connected-gated server unsubscribe
+    for (const name of [...this._rooms.keys()]) {
+      this._rooms.get(name)!._cleanup();
+      this._rooms.delete(name);
+    }
+
+    // Lobby: server unsubscribe is best-effort and needs a live socket
+    if (this._lobby && this._client.connected) {
+      try {
+        this._lobby.unsubscribe();
+      } catch {
+        /* best-effort */
       }
-    });
+    }
+    this._lobby = null;
 
-    this._client!.on('lobbyPresence:leave' as any, (evt: any) => {
-      const id = evt?.actorId;
-      if (id) {
-        this._log(`lobby presence:leave — ${id}`);
-        for (const room of this._rooms.values()) {
-          const agents = (room as any)._agents as Map<string, any>;
-          agents.delete(id);
-          room._emitPresence('presenceLeave', id);
-        }
-      }
-    });
+    releaseWrapper(this._client, this._options.appName);
 
-    this._client!.on('lobbyPresence:update' as any, (evt: any) => {
-      const id = evt?.actorId;
-      const data = evt?.data || {};
-      if (id) {
-        for (const room of this._rooms.values()) {
-          const agents = (room as any)._agents as Map<string, any>;
-          const existing = agents.get(id);
-          if (existing) {
-            if (data.name) existing.name = data.name;
-            if (data.role) existing.role = data.role;
-            if (data.capabilities) existing.capabilities = data.capabilities;
-            if (data.metadata) existing.metadata = data.metadata;
-          }
-          room._emitPresence('presenceUpdate', id, data);
-        }
-      }
-    });
-
-    try {
-      const initialState = await lobby.subscribe();
-      this._log(`lobby subscribed, initial state:`, Object.keys(initialState || {}));
-      return initialState || {};
-    } catch (err) {
-      this._log(`lobby subscription failed:`, err);
-      return {};
+    if (!this._isReady) {
+      this._readyReject(new Error("NoLagAgents detached before ready"));
     }
   }
 
-  /** Disconnect from NoLag */
-  disconnect(): void {
-    this._log("disconnecting...");
-    this._client?.disconnect();
-    this._rooms.clear();
-    this._client = null;
-    this._appContext = null;
-    this._connected = false;
+  // ============ Private: Epoch Setup ============
+
+  private _onConnect(): void {
+    this._epoch++;
+    void this._runSetup(this._epoch);
   }
+
+  /**
+   * One setup pass per connection epoch. Serves both initial setup (epoch 1)
+   * and reconnect restore (epoch > 1). Aborts silently whenever a newer
+   * epoch started or the wrapper detached — checked after every await.
+   */
+  private async _runSetup(epoch: number): Promise<void> {
+    const stale = () => epoch !== this._epoch || this._detached;
+    this._log(this._isReady ? "restoring after reconnect..." : "setting up...");
+    this._log("agentId:", this._options.agentId, "→ actorId:", this._client.actorId);
+
+    if (!this._isReady) {
+      // First successful setup: auto-join configured rooms.
+      for (const roomName of this._options.rooms) {
+        this._joinRoomInternal(roomName);
+      }
+    } else {
+      // Reconnect: the core auto-restores topic subscriptions, but not
+      // room-scoped presence — re-apply each room's local presence.
+      for (const room of this._rooms.values()) {
+        room._updateLocalPresence();
+      }
+    }
+
+    // Lobby is OPTIONAL: only when configured. Subscribe every epoch
+    // (idempotent server-side) and diff-hydrate from the returned snapshot —
+    // one path for setup and reconnect restore.
+    if (this._options.lobby) {
+      if (!this._lobby) {
+        this._lobby = this._client.setApp(this._options.appName).setLobby(this._options.lobby);
+      }
+      try {
+        const state = await this._lobby.subscribe();
+        if (stale()) return;
+        this._diffHydrateLobby(state);
+        this._log("lobby subscribed:", this._options.lobby);
+      } catch (err) {
+        if (stale()) return;
+        this._log("lobby subscription failed:", err);
+      }
+    }
+
+    if (stale()) return;
+
+    // Ready keys on the first setup that COMPLETES, not on epoch 1: an
+    // epoch aborted by a racing reconnect must not strand ready().
+    if (!this._isReady) {
+      this._isReady = true;
+      this._readyResolve();
+      this.emit("connected");
+    } else {
+      this.emit("reconnected");
+    }
+
+    // Deferred lobby refetch: catches agents who joined during the setup
+    // window (only when the lobby is configured).
+    if (this._options.lobby) {
+      this._scheduleLobbyRefresh(epoch);
+    }
+  }
+
+  private _scheduleLobbyRefresh(epoch: number): void {
+    if (this._lobbyRefreshTimer) clearTimeout(this._lobbyRefreshTimer);
+    this._lobbyRefreshTimer = setTimeout(() => {
+      this._lobbyRefreshTimer = null;
+      if (epoch !== this._epoch || this._detached || !this._client.connected || !this._lobby) {
+        return;
+      }
+      this._lobby
+        .fetchPresence()
+        .then((state) => {
+          if (epoch !== this._epoch || this._detached) return;
+          this._diffHydrateLobby(state);
+        })
+        .catch(() => {
+          /* best-effort */
+        });
+    }, LOBBY_REFRESH_DELAY_MS);
+  }
+
+  // ============ Room Management ============
 
   /**
    * Get or create an AgentRoom wrapper.
    * If the room hasn't been joined yet, it will be joined automatically.
    */
   room(name: string): AgentRoom {
-    let agentRoom = this._rooms.get(name);
-    if (agentRoom) return agentRoom;
+    this._assertUsable();
+    const existing = this._rooms.get(name);
+    if (existing) return existing;
+    return this._joinRoomInternal(name);
+  }
 
-    if (!this._appContext) {
-      throw new Error(
-        "Not connected. Call connect() before accessing rooms.",
-      );
+  // ============ Lobby (cross-room presence observation) ============
+
+  /**
+   * Subscribe to a lobby for cross-room presence observation. Lobby presence
+   * events are forwarded into all AgentRooms. Prefer the `lobby` constructor
+   * option — this method is for on-demand subscription after ready.
+   *
+   * Returns the initial presence snapshot.
+   */
+  async subscribeLobby(lobbySlug: string): Promise<LobbyPresenceState> {
+    this._assertUsable();
+    this._log(`subscribing to lobby: ${lobbySlug}`);
+    this._options.lobby = lobbySlug;
+    if (!this._lobby) {
+      this._lobby = this._client.setApp(this._options.appName).setLobby(lobbySlug);
     }
+    try {
+      const state = await this._lobby.subscribe();
+      if (!this._detached) this._diffHydrateLobby(state);
+      return state || {};
+    } catch (err) {
+      this._log("lobby subscription failed:", err);
+      return {};
+    }
+  }
 
+  // ============ Private: Guards ============
+
+  private _assertUsable(): void {
+    if (this._detached) {
+      throw new Error("NoLagAgents has been detached — construct a new instance");
+    }
+    if (!this._isReady) {
+      throw new Error('NoLagAgents not ready — await ready() or the "connected" event');
+    }
+  }
+
+  // ============ Private: Room Setup ============
+
+  private _joinRoomInternal(name: string): AgentRoom {
     this._log(`joining room: ${name}`);
-    const roomContext = this._appContext.setRoom(name);
-    agentRoom = new AgentRoom(
+    const roomContext = this._client.setApp(this._options.appName).setRoom(name);
+    const room = new AgentRoom(
       name,
       roomContext,
-      this._client,
-      this._log,
+      createLogger(`AgentRoom:${name}`, this._options.debug),
       this._options.agentId,
+      this._options.appName,
+      () => this._client.connected,
       this._options.presence,
     );
-    this._rooms.set(name, agentRoom);
-    return agentRoom;
+    this._rooms.set(name, room);
+    return room;
+  }
+
+  // ============ Private: Scope Filtering ============
+
+  /**
+   * On a shared client, presence events from other apps' wrappers arrive on
+   * the same connection-level events. Wrappers stamp their presence with a
+   * `__scope` (their appName); a mismatched tag means another app's data.
+   * Untagged presence is accepted (older peers in this same app).
+   */
+  private _foreignScope(data: Record<string, unknown> | undefined): boolean {
+    const scope = data?.__scope;
+    return typeof scope === "string" && scope !== this._options.appName;
+  }
+
+  // ============ Private: Room Presence → Rooms ============
+
+  private _handleRoomPresenceJoin(data: ActorPresence): void {
+    if (data.actorTokenId === this._client.actorId) return;
+    const presence = (data.presence || {}) as unknown as Record<string, unknown>;
+    if (this._foreignScope(presence)) return;
+    const roomId = (data as unknown as { roomId?: string }).roomId;
+    for (const room of this._targetRooms(roomId)) {
+      room._handlePresenceJoin(data.actorTokenId, presence);
+    }
+  }
+
+  private _handleRoomPresenceLeave(data: ActorPresence): void {
+    if (data.actorTokenId === this._client.actorId) return;
+    const roomId = (data as unknown as { roomId?: string }).roomId;
+    for (const room of this._targetRooms(roomId)) {
+      room._handlePresenceLeave(data.actorTokenId);
+    }
+  }
+
+  private _handleRoomPresenceUpdate(data: ActorPresence): void {
+    if (data.actorTokenId === this._client.actorId) return;
+    const presence = (data.presence || {}) as unknown as Record<string, unknown>;
+    if (this._foreignScope(presence)) return;
+    const roomId = (data as unknown as { roomId?: string }).roomId;
+    for (const room of this._targetRooms(roomId)) {
+      room._handlePresenceUpdate(data.actorTokenId, presence);
+    }
+  }
+
+  /** Rooms a presence event targets: the named room, or all when unscoped. */
+  private _targetRooms(roomId: string | undefined): AgentRoom[] {
+    if (roomId && this._rooms.has(roomId)) return [this._rooms.get(roomId)!];
+    if (roomId) return [];
+    return [...this._rooms.values()];
+  }
+
+  // ============ Private: Lobby → Rooms ============
+
+  private _handleLobbyJoin(event: LobbyPresenceEvent): void {
+    const { actorId, data } = event;
+    if (actorId === this._client.actorId) return;
+    const presence = (data || {}) as unknown as Record<string, unknown>;
+    if (this._foreignScope(presence)) return;
+    this._log(`lobby presence:join — ${(presence.name as string) || actorId}`);
+    for (const room of this._rooms.values()) {
+      room._handlePresenceJoin(actorId, presence);
+    }
+  }
+
+  private _handleLobbyLeave(event: LobbyPresenceEvent): void {
+    const { actorId, data } = event;
+    if (actorId === this._client.actorId) return;
+    const presence = (data || {}) as unknown as Record<string, unknown>;
+    if (this._foreignScope(presence)) return;
+    this._log(`lobby presence:leave — ${actorId}`);
+    for (const room of this._rooms.values()) {
+      room._handlePresenceLeave(actorId);
+    }
+  }
+
+  private _handleLobbyUpdate(event: LobbyPresenceEvent): void {
+    const { actorId, data } = event;
+    if (actorId === this._client.actorId) return;
+    const presence = (data || {}) as unknown as Record<string, unknown>;
+    if (this._foreignScope(presence)) return;
+    for (const room of this._rooms.values()) {
+      room._handlePresenceUpdate(actorId, presence);
+    }
+  }
+
+  /**
+   * Reconcile the rooms' agent registries against a fresh lobby snapshot,
+   * routing each present actor in as a join. One path for initial hydration,
+   * reconnect restore, and the deferred refetch.
+   */
+  private _diffHydrateLobby(state: LobbyPresenceState): void {
+    for (const roomId of Object.keys(state)) {
+      const roomPresence = state[roomId];
+      for (const actorId of Object.keys(roomPresence)) {
+        if (actorId === this._client.actorId) continue;
+        const raw = roomPresence[actorId] as unknown as Record<string, unknown>;
+        // Server returns full actor records with presence nested under .presence
+        const presence = (raw?.presence ?? raw) as Record<string, unknown>;
+        if (this._foreignScope(presence)) continue;
+        for (const room of this._rooms.values()) {
+          room._handlePresenceJoin(actorId, presence);
+        }
+      }
+    }
+  }
+
+  // ============ Private: Helpers ============
+
+  /** Derive presence identity from name/role options when no presence given. */
+  private _presenceFromIdentity(options: NoLagAgentsOptions): AgentPresenceData | undefined {
+    if (!options.name && !options.role) return undefined;
+    return {
+      name: options.name ?? (options.agentId ?? "agent"),
+      role: options.role ?? "agent",
+    };
   }
 }

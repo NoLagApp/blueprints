@@ -21,8 +21,8 @@ describe('DashboardPanel', () => {
 
   beforeEach(() => {
     ctx = createMockRoomContext();
-    const opts: ResolvedDashOptions = { appName: 'dash', maxMetricPoints: 1000, aggregationWindow: 60000, debug: false, reconnect: true, panels: [] };
-    panel = new DashboardPanel('overview', ctx, 'v1', 'local-actor', opts, () => {});
+    const opts: ResolvedDashOptions = { appName: 'dash', maxMetricPoints: 1000, aggregationWindow: 60000, debug: false, panels: [] };
+    panel = new DashboardPanel('overview', ctx, 'v1', 'local-actor', opts, () => {}, () => true);
   });
 
   it('should subscribe to metrics and widgets', () => {

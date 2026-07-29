@@ -16,14 +16,22 @@ export class DashboardPanel extends EventEmitter<DashPanelEvents> {
   private _widgetManager: WidgetManager;
   private _log: (...args: unknown[]) => void;
   private _localViewerId: string;
+  private _isConnected: () => boolean;
 
-  constructor(name: string, roomContext: RoomContext, localViewerId: string, localActorId: string, options: ResolvedDashOptions, log: (...args: unknown[]) => void) {
+  // Stored topic handler refs — cleanup removes exactly these, never all
+  // handlers for a topic (the client may be shared with other consumers).
+  private _onMetricsRef: ((data: unknown, meta: MessageMeta) => void) | null = null;
+  private _onWidgetsRef: ((data: unknown, meta: MessageMeta) => void) | null = null;
+
+  /** @internal */
+  constructor(name: string, roomContext: RoomContext, localViewerId: string, localActorId: string, options: ResolvedDashOptions, log: (...args: unknown[]) => void, isConnected: () => boolean) {
     super();
     this.name = name;
     this._roomContext = roomContext;
     this._localViewerId = localViewerId;
     this._options = options;
     this._log = log;
+    this._isConnected = isConnected;
     this._presenceManager = new PresenceManager(localActorId);
     this._metricStore = new MetricStore(options.maxMetricPoints);
     this._widgetManager = new WidgetManager();
@@ -76,17 +84,23 @@ export class DashboardPanel extends EventEmitter<DashPanelEvents> {
       this._roomContext.subscribe(TOPIC_METRICS);
     }
     this._roomContext.subscribe(TOPIC_WIDGETS);
-    this._roomContext.on(TOPIC_METRICS, (data: unknown, meta: MessageMeta) => {
+
+    // Listen for metrics (refs stored for handler-specific removal)
+    this._onMetricsRef = (data: unknown, meta: MessageMeta) => {
       const raw = data as Record<string, unknown>;
       const point: MetricPoint = { id: raw.id as string, streamId: raw.streamId as string, value: raw.value as number, unit: raw.unit as string | undefined, tags: raw.tags as Record<string, string> | undefined, timestamp: raw.timestamp as number, isReplay: meta.isReplay ?? false };
       if (this._metricStore.add(point)) this.emit('metric', point);
-    });
-    this._roomContext.on(TOPIC_WIDGETS, (data: unknown, meta: MessageMeta) => {
+    };
+    this._roomContext.on(TOPIC_METRICS, this._onMetricsRef);
+
+    // Listen for widget updates
+    this._onWidgetsRef = (data: unknown, meta: MessageMeta) => {
       const raw = data as Record<string, unknown>;
       const update: WidgetUpdate = { id: raw.id as string, widgetId: raw.widgetId as string, type: raw.type as WidgetType, data: raw.data as Record<string, unknown>, label: raw.label as string | undefined, timestamp: raw.timestamp as number, isReplay: meta.isReplay ?? false };
       this._widgetManager.update(update);
       this.emit('widgetUpdate', update);
-    });
+    };
+    this._roomContext.on(TOPIC_WIDGETS, this._onWidgetsRef);
   }
 
   _activate(): void {
@@ -107,10 +121,22 @@ export class DashboardPanel extends EventEmitter<DashPanelEvents> {
   _updateLocalPresence(): void { this._setPresence(); }
 
   _cleanup(): void {
-    this._roomContext.unsubscribe(TOPIC_METRICS);
-    this._roomContext.unsubscribe(TOPIC_WIDGETS);
-    this._roomContext.off(TOPIC_METRICS);
-    this._roomContext.off(TOPIC_WIDGETS);
+    this._log('Panel cleanup:', this.name);
+
+    // Server unsubscribes need a live socket; skip when disconnected
+    // (best-effort — the core would no-op with an error callback anyway).
+    if (this._isConnected()) {
+      this._roomContext.unsubscribe(TOPIC_METRICS);
+      this._roomContext.unsubscribe(TOPIC_WIDGETS);
+    }
+
+    // Handler-specific removal only: the client may be shared, and a bare
+    // off(topic) would strip other consumers' handlers too.
+    if (this._onMetricsRef) this._roomContext.off(TOPIC_METRICS, this._onMetricsRef);
+    if (this._onWidgetsRef) this._roomContext.off(TOPIC_WIDGETS, this._onWidgetsRef);
+    this._onMetricsRef = null;
+    this._onWidgetsRef = null;
+
     this._metricStore.clear();
     this._widgetManager.clear();
     this._presenceManager.clear();
@@ -118,6 +144,13 @@ export class DashboardPanel extends EventEmitter<DashPanelEvents> {
   }
 
   private _setPresence(): void {
-    this._roomContext.setPresence({ viewerId: this._localViewerId, username: this._options.username, metadata: this._options.metadata } as DashPresenceData);
+    this._roomContext.setPresence({
+      viewerId: this._localViewerId,
+      username: this._options.username,
+      metadata: this._options.metadata,
+      // Scope tag: on a shared client, other apps' wrappers filter our
+      // presence out by this (and we filter theirs).
+      __scope: this._options.appName,
+    } as DashPresenceData);
   }
 }

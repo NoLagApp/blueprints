@@ -42,12 +42,12 @@ function createOptions(): ResolvedQueueOptions {
     appName: 'queue',
     maxJobCache: 1000,
     debug: false,
-    reconnect: true,
     queues: [],
   };
 }
 
 const noop = () => {};
+const alwaysConnected = () => true;
 const LOCAL_WORKER_ID = 'local-worker-id';
 
 describe('QueueRoom', () => {
@@ -56,7 +56,7 @@ describe('QueueRoom', () => {
 
   beforeEach(() => {
     ctx = createMockRoomContext();
-    room = new QueueRoom('image-processing', ctx, LOCAL_WORKER_ID, createOptions(), noop);
+    room = new QueueRoom('image-processing', ctx, LOCAL_WORKER_ID, createOptions(), noop, alwaysConnected);
     room._setLocalActorId('local-actor-123');
   });
 
@@ -528,7 +528,7 @@ describe('QueueRoom', () => {
   // ============ _cleanup ============
 
   describe('_cleanup', () => {
-    it('should unsubscribe from both topics', () => {
+    it('should unsubscribe from both topics when connected', () => {
       room._subscribe();
       room._cleanup();
 
@@ -536,12 +536,24 @@ describe('QueueRoom', () => {
       expect(ctx.unsubscribe).toHaveBeenCalledWith('_progress');
     });
 
-    it('should remove off handlers for both topics', () => {
+    it('should skip server unsubscribes when disconnected', () => {
+      const disconnectedRoom = new QueueRoom(
+        'image-processing', ctx, LOCAL_WORKER_ID, createOptions(), noop, () => false,
+      );
+      disconnectedRoom._setLocalActorId('local-actor-123');
+      disconnectedRoom._subscribe();
+      disconnectedRoom._cleanup();
+
+      expect(ctx.unsubscribe).not.toHaveBeenCalled();
+    });
+
+    it('should remove exactly the stored handlers for both topics', () => {
       room._subscribe();
       room._cleanup();
 
-      expect(ctx.off).toHaveBeenCalledWith('jobs');
-      expect(ctx.off).toHaveBeenCalledWith('_progress');
+      // Handler-specific removal: off(topic, handler), never bare off(topic)
+      expect(ctx.off).toHaveBeenCalledWith('jobs', expect.any(Function));
+      expect(ctx.off).toHaveBeenCalledWith('_progress', expect.any(Function));
     });
 
     it('should remove all event listeners', () => {

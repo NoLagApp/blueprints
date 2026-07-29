@@ -8,7 +8,7 @@ function createMockRoomContext() {
   const ctx: any = {
     subscribe: vi.fn(), unsubscribe: vi.fn(), emit: vi.fn(),
     on: vi.fn((topic: string, handler: Function) => { handlers.set(topic, handler); return ctx; }),
-    off: vi.fn((topic: string) => { handlers.delete(topic); return ctx; }),
+    off: vi.fn((topic: string, _handler?: Function) => { handlers.delete(topic); return ctx; }),
     setPresence: vi.fn(), fetchPresence: vi.fn(() => Promise.resolve([])),
     _fire(topic: string, data: unknown, meta: MessageMeta) { handlers.get(topic)?.(data, meta); },
   };
@@ -20,7 +20,7 @@ function createLocalViewer(): StreamViewer {
 }
 
 function createOptions(): ResolvedStreamOptions {
-  return { username: 'Host', role: 'host', appName: 'stream', maxCommentCache: 500, reactionWindow: 3000, debug: false, reconnect: true, streams: [] };
+  return { username: 'Host', role: 'host', appName: 'stream', maxCommentCache: 500, reactionWindow: 3000, debug: false, streams: [] };
 }
 
 describe('StreamRoom', () => {
@@ -29,7 +29,7 @@ describe('StreamRoom', () => {
 
   beforeEach(() => {
     ctx = createMockRoomContext();
-    room = new StreamRoom('live-1', ctx, createLocalViewer(), createOptions(), () => {});
+    room = new StreamRoom('live-1', ctx, createLocalViewer(), createOptions(), () => {}, () => true);
   });
 
   it('should subscribe to all topics', () => {
@@ -68,11 +68,24 @@ describe('StreamRoom', () => {
     expect(leaveHandler).toHaveBeenCalled();
   });
 
-  it('should cleanup', () => {
+  it('should cleanup (unsubscribes and handler-specific off when connected)', () => {
     room._subscribe();
     room._cleanup();
     expect(ctx.unsubscribe).toHaveBeenCalledWith('comments');
     expect(ctx.unsubscribe).toHaveBeenCalledWith('_reactions');
     expect(ctx.unsubscribe).toHaveBeenCalledWith('polls');
+    // handler-specific removal: off called with the topic AND a handler ref,
+    // never a bare off(topic)
+    expect(ctx.off).toHaveBeenCalledWith('comments', expect.any(Function));
+    expect(ctx.off).toHaveBeenCalledWith('_reactions', expect.any(Function));
+    expect(ctx.off).toHaveBeenCalledWith('polls', expect.any(Function));
+  });
+
+  it('skips server unsubscribes on cleanup when disconnected but still removes handlers', () => {
+    const offlineRoom = new StreamRoom('live-1', ctx, createLocalViewer(), createOptions(), () => {}, () => false);
+    offlineRoom._subscribe();
+    offlineRoom._cleanup();
+    expect(ctx.unsubscribe).not.toHaveBeenCalled();
+    expect(ctx.off).toHaveBeenCalledWith('comments', expect.any(Function));
   });
 });

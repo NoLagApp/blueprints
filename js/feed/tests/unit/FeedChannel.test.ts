@@ -22,8 +22,8 @@ describe('FeedChannel', () => {
   beforeEach(() => {
     ctx = createMockRoomContext();
     const user: FeedUser = { userId: 'u1', actorTokenId: 'a1', username: 'Alice', joinedAt: Date.now(), isLocal: true };
-    const opts: ResolvedFeedOptions = { username: 'Alice', appName: 'feed', maxPostCache: 200, maxCommentCache: 100, debug: false, reconnect: true, channels: [] };
-    ch = new FeedChannel('main', ctx, user, opts, () => {});
+    const opts: ResolvedFeedOptions = { username: 'Alice', appName: 'feed', maxPostCache: 200, maxCommentCache: 100, debug: false, channels: [] };
+    ch = new FeedChannel('main', ctx, user, opts, () => {}, () => true);
   });
 
   it('should subscribe to all topics', () => {
@@ -57,9 +57,22 @@ describe('FeedChannel', () => {
     expect(likeHandler).toHaveBeenCalled();
   });
 
-  it('should cleanup', () => {
+  it('should cleanup (unsubscribes and handler-specific off when connected)', () => {
     ch._subscribe();
     ch._cleanup();
     expect(ctx.unsubscribe).toHaveBeenCalledWith('posts');
+    // handler-specific removal: off called with the topic AND a handler ref,
+    // never a bare off(topic)
+    expect(ctx.off).toHaveBeenCalledWith('posts', expect.any(Function));
+  });
+
+  it('skips server unsubscribes on cleanup when disconnected but still removes handlers', () => {
+    const user: FeedUser = { userId: 'u1', actorTokenId: 'a1', username: 'Alice', joinedAt: Date.now(), isLocal: true };
+    const opts: ResolvedFeedOptions = { username: 'Alice', appName: 'feed', maxPostCache: 200, maxCommentCache: 100, debug: false, channels: [] };
+    const offlineCh = new FeedChannel('main', ctx, user, opts, () => {}, () => false);
+    offlineCh._subscribe();
+    offlineCh._cleanup();
+    expect(ctx.unsubscribe).not.toHaveBeenCalled();
+    expect(ctx.off).toHaveBeenCalledWith('posts', expect.any(Function));
   });
 });

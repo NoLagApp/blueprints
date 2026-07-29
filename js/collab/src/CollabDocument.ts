@@ -38,10 +38,16 @@ export class CollabDocument extends EventEmitter<CollabDocumentEvents> {
   private _operationStore: OperationStore;
   private _awarenessManager: AwarenessManager;
   private _log: (...args: unknown[]) => void;
+  private _isConnected: () => boolean;
 
   /** Throttle state for cursor updates */
   private _cursorThrottleTimer: ReturnType<typeof setTimeout> | null = null;
   private _pendingCursorUpdate: CursorUpdateOptions | null = null;
+
+  // Stored topic handler refs — cleanup removes exactly these, never all
+  // handlers for a topic (the client may be shared with other consumers).
+  private _onOperationsRef: ((data: unknown) => void) | null = null;
+  private _onCursorsRef: ((data: unknown) => void) | null = null;
 
   /** @internal */
   constructor(
@@ -50,6 +56,7 @@ export class CollabDocument extends EventEmitter<CollabDocumentEvents> {
     localUser: CollabUser,
     options: ResolvedCollabOptions,
     log: (...args: unknown[]) => void,
+    isConnected: () => boolean,
   ) {
     super();
     this.name = name;
@@ -57,6 +64,7 @@ export class CollabDocument extends EventEmitter<CollabDocumentEvents> {
     this._localUser = localUser;
     this._options = options;
     this._log = log;
+    this._isConnected = isConnected;
 
     this._presenceManager = new PresenceManager(localUser.actorTokenId);
     this._operationStore = new OperationStore(options.maxOperationCache);
@@ -175,13 +183,17 @@ export class CollabDocument extends EventEmitter<CollabDocumentEvents> {
     this._roomContext.subscribe(TOPIC_OPERATIONS);
     this._roomContext.subscribe(TOPIC_CURSORS);
 
-    this._roomContext.on(TOPIC_OPERATIONS, (data: unknown) => {
+    // Listen for operations (refs stored for handler-specific removal)
+    this._onOperationsRef = (data: unknown) => {
       this._handleIncomingOperation(data);
-    });
+    };
+    this._roomContext.on(TOPIC_OPERATIONS, this._onOperationsRef);
 
-    this._roomContext.on(TOPIC_CURSORS, (data: unknown) => {
+    // Listen for cursors
+    this._onCursorsRef = (data: unknown) => {
       this._handleIncomingCursor(data);
-    });
+    };
+    this._roomContext.on(TOPIC_CURSORS, this._onCursorsRef);
   }
 
   /** @internal Set presence and fetch current room members */
@@ -267,17 +279,28 @@ export class CollabDocument extends EventEmitter<CollabDocumentEvents> {
   _cleanup(): void {
     this._log('Document cleanup:', this.name);
 
-    // Cancel throttle timer
+    // Cancel cursor throttle timer
     if (this._cursorThrottleTimer !== null) {
       clearTimeout(this._cursorThrottleTimer);
       this._cursorThrottleTimer = null;
     }
+    this._pendingCursorUpdate = null;
 
-    this._roomContext.unsubscribe(TOPIC_OPERATIONS);
-    this._roomContext.unsubscribe(TOPIC_CURSORS);
-    this._roomContext.off(TOPIC_OPERATIONS);
-    this._roomContext.off(TOPIC_CURSORS);
+    // Server unsubscribes need a live socket; skip when disconnected
+    // (best-effort — the core would no-op with an error callback anyway).
+    if (this._isConnected()) {
+      this._roomContext.unsubscribe(TOPIC_OPERATIONS);
+      this._roomContext.unsubscribe(TOPIC_CURSORS);
+    }
 
+    // Handler-specific removal only: the client may be shared, and a bare
+    // off(topic) would strip other consumers' handlers too.
+    if (this._onOperationsRef) this._roomContext.off(TOPIC_OPERATIONS, this._onOperationsRef);
+    if (this._onCursorsRef) this._roomContext.off(TOPIC_CURSORS, this._onCursorsRef);
+    this._onOperationsRef = null;
+    this._onCursorsRef = null;
+
+    // Disposes all per-user idle timers alongside cursor/status state.
     this._awarenessManager.dispose();
     this._presenceManager.clear();
     this._operationStore.clear();
@@ -343,6 +366,9 @@ export class CollabDocument extends EventEmitter<CollabDocumentEvents> {
       color: this._localUser.color,
       status: this._localUser.status,
       metadata: this._localUser.metadata,
+      // Scope tag: on a shared client, other apps' wrappers filter our
+      // presence out by this (and we filter theirs).
+      __scope: this._options.appName,
     };
     this._roomContext.setPresence(presenceData);
   }

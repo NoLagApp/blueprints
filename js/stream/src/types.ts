@@ -1,16 +1,23 @@
+import type { NoLagSocket } from '@nolag/js-sdk';
+
 export type ViewerRole = 'viewer' | 'moderator' | 'host';
 
 export interface NoLagStreamOptions {
+  /**
+   * The injected NoLag core client. The app owns its lifecycle: create it
+   * with `NoLag(tokenOrProvider)`, call `connect()`/`disconnect()` yourself.
+   * The wrapper only attaches protocol behavior on top and releases it
+   * again via `detach()`. One wrapper per (client, appName).
+   */
+  client: NoLagSocket;
   username: string;
   avatar?: string;
   role?: ViewerRole;
   metadata?: Record<string, unknown>;
   appName?: string;
-  url?: string;
   maxCommentCache?: number;
   reactionWindow?: number;
   debug?: boolean;
-  reconnect?: boolean;
   streams?: string[];
 }
 
@@ -20,11 +27,9 @@ export interface ResolvedStreamOptions {
   role: ViewerRole;
   metadata?: Record<string, unknown>;
   appName: string;
-  url?: string;
   maxCommentCache: number;
   reactionWindow: number;
   debug: boolean;
-  reconnect: boolean;
   streams: string[];
 }
 
@@ -100,6 +105,7 @@ export interface StreamPresenceData {
 export interface StreamClientEvents {
   connected: [];
   disconnected: [reason: string];
+  reconnecting: [];
   reconnected: [];
   error: [error: Error];
   viewerOnline: [viewer: StreamViewer];

@@ -5,3 +5,6 @@ export const TOPIC_POSTS = 'posts';
 export const TOPIC_REACTIONS = 'reactions';
 export const TOPIC_COMMENTS = 'comments';
 export const LOBBY_ID = 'online';
+
+/** Delay before the post-setup lobby presence refetch (catches simultaneous joiners) */
+export const LOBBY_REFRESH_DELAY_MS = 2000;

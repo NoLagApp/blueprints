@@ -2,9 +2,18 @@
  * @nolag/chat — Public types
  */
 
+import type { NoLagSocket } from '@nolag/js-sdk';
+
 // ============ Options ============
 
 export interface NoLagChatOptions {
+  /**
+   * The injected NoLag core client. The app owns its lifecycle: create it
+   * with `NoLag(tokenOrProvider)`, call `connect()`/`disconnect()` yourself.
+   * The wrapper only attaches protocol behavior on top and releases it
+   * again via `detach()`. One wrapper per (client, appName).
+   */
+  client: NoLagSocket;
   /** Display name for this user */
   username: string;
   /** Avatar URL */
@@ -13,16 +22,12 @@ export interface NoLagChatOptions {
   metadata?: Record<string, unknown>;
   /** NoLag app name (default: 'chat') */
   appName?: string;
-  /** WebSocket URL override */
-  url?: string;
   /** Typing indicator auto-stop timeout in ms (default: 3000) */
   typingTimeout?: number;
   /** Max messages kept in memory per room (default: 500) */
   maxMessageCache?: number;
-  /** Enable debug logging (default: false) */
+  /** Enable debug logging for the wrapper (default: false) */
   debug?: boolean;
-  /** Auto-reconnect on disconnect (default: true) */
-  reconnect?: boolean;
   /** List of rooms to subscribe to on connect (messages received in all; presence only in active room) */
   rooms?: string[];
 }
@@ -116,6 +121,7 @@ export interface MessageStream {
 export interface ChatClientEvents {
   connected: [];
   disconnected: [reason: string];
+  reconnecting: [];
   reconnected: [];
   error: [error: Error];
   userOnline: [user: ChatUser];
@@ -162,10 +168,8 @@ export interface ResolvedChatOptions {
   avatar?: string;
   metadata?: Record<string, unknown>;
   appName: string;
-  url?: string;
   typingTimeout: number;
   maxMessageCache: number;
   debug: boolean;
-  reconnect: boolean;
   rooms: string[];
 }

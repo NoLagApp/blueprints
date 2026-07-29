@@ -14,9 +14,9 @@ NoLag is a real-time messaging platform that handles WebSocket connections, mess
 2. Create a new **project** in the portal
 3. Choose the **Agents** blueprint when creating an app — this pre-configures the topics (`tasks`, `results`, `state`, `events`, `inbox`, `tools`, `approval`), rooms, and lobbies your agent workflow needs
 4. Go to the app's **Tokens** page and generate an **actor token** for each agent
-5. Use that token when connecting with this SDK
+5. Use that token to construct the core `@nolag/js-sdk` client, then inject the client into `NoLagAgents`
 
-Each token identifies a unique agent (actor) in NoLag. The blueprint handles all the infrastructure setup — you just write your agent logic.
+Each token identifies a unique agent (actor) in NoLag. The blueprint handles all the infrastructure setup — you just write your agent logic. The core client owns the connection; the wrapper attaches to it (see the Lifecycle section).
 
 ## Install
 
@@ -26,15 +26,27 @@ npm install @nolag/js-sdk @nolag/agents
 
 ## Quick Start
 
+The app owns one core NoLag client; wrappers attach to it. Any number of
+wrapper SDKs (agents, chat, notify, ...) can share the same connection as
+long as each uses its own app.
+
 ```typescript
+import { NoLag } from "@nolag/js-sdk";
 import { NoLagAgents, Handoff } from "@nolag/agents";
 
+// One client for the whole app. In a browser, use a token provider so the
+// SDK can mint fresh short-lived client tokens from your backend.
+const client = NoLag(async () => (await (await fetch("/api/nolag-token")).json()).token);
+
 // --- Orchestrator ---
-const orchestrator = new NoLagAgents("ORCHESTRATOR_TOKEN", {
+const orchestrator = new NoLagAgents({
+  client,
   agentId: "orchestrator-1",
   presence: { name: "orchestrator-1", role: "orchestrator" },
 });
-await orchestrator.connect();
+
+await client.connect();        // the app owns the connection
+await orchestrator.ready();    // wrapper setup done (identity, rooms, lobby)
 
 const room = orchestrator.room("default-workflow");
 const handoff = new Handoff(room);
@@ -46,8 +58,10 @@ const result = await handoff.dispatch("summarize", { text: "..." }, {
 });
 console.log("Result:", result?.payload);
 
-// --- Worker ---
-const worker = new NoLagAgents("WORKER_TOKEN", {
+// --- Worker (its own client) ---
+const workerClient = NoLag(async () => (await (await fetch("/api/nolag-token")).json()).token);
+const worker = new NoLagAgents({
+  client: workerClient,
   agentId: "worker-1",
   presence: {
     name: "worker-1",
@@ -55,7 +69,9 @@ const worker = new NoLagAgents("WORKER_TOKEN", {
     capabilities: ["summarize"],
   },
 });
-await worker.connect();
+
+await workerClient.connect();
+await worker.ready();
 
 const workerRoom = worker.room("default-workflow");
 const workerHandoff = new Handoff(workerRoom);
@@ -64,7 +80,31 @@ workerHandoff.onTask(["summarize"], async (task, respond) => {
   const summary = await summarize(task.payload.text);
   respond("success", { summary });
 });
+
+// Teardown: the wrapper releases its handlers and topics; the app closes
+// the socket (never the other way around).
+orchestrator.detach();
+client.disconnect();
 ```
+
+## Lifecycle
+
+- **Construction = attach.** The wrapper wires its handlers onto the injected
+  client immediately. If the client is already connected, setup runs on the
+  next microtask; otherwise it runs when the client's `connect` event fires.
+- **`ready()`** resolves once the first setup completed (identity, configured
+  rooms, and — when configured — the lobby). Auth failures surface via your own
+  `await client.connect()`, not via `ready()`.
+- **Reconnects are automatic.** The wrapper re-applies room presence and, when
+  a lobby is configured, re-hydrates cross-room presence, emitting `reconnected`.
+- **`detach()`** removes exactly this wrapper's handlers and topics and never
+  touches the socket. It is terminal: construct a new instance to re-attach.
+  Detach while the client is still connected so server-side unsubscribes go
+  through. In frameworks, call it from your dispose hook (`onUnmounted`,
+  HMR dispose).
+- **One wrapper per (client, app).** Sharing a client across wrappers of
+  DIFFERENT apps is the intended pattern; two wrappers on the same app would
+  collide on topics and presence (the SDK warns if you do this).
 
 ## Coordination Patterns
 
@@ -202,35 +242,38 @@ observe.on((event) => {
 #### Constructor
 
 ```typescript
-const agents = new NoLagAgents(token: string, options?: NoLagAgentsOptions);
+const agents = new NoLagAgents(options: NoLagAgentsOptions);
 ```
 
 **Options:**
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
+| `client` | `NoLagSocket` | *required* | The injected core NoLag client |
 | `appName` | `string` | `"agents"` | App slug for the agents workflow |
 | `agentId` | `string` | auto-generated | Unique agent ID |
+| `name` | `string` | `agentId` | Display name advertised via presence |
+| `role` | `string` | `"agent"` | Agent role: `orchestrator`, `agent`, `observer`, `human`, `tool-server` |
 | `debug` | `boolean` | `false` | Enable debug logging |
-| `rooms` | `string[]` | `["default-workflow"]` | Rooms to auto-join on connect |
-| `lobby` | `string` | — | Lobby slug for cross-room presence observation |
-| `presence` | `AgentPresenceData` | — | Presence data advertised to other agents |
-| `clientOptions` | `Partial<NoLagOptions>` | — | Additional options passed to `@nolag/js-sdk` |
+| `rooms` | `string[]` | `["default-workflow"]` | Rooms to auto-join on first setup |
+| `lobby` | `string` | — | Lobby slug for cross-room presence observation (optional) |
+| `presence` | `AgentPresenceData` | — | Presence data advertised to other agents (overrides `name`/`role`) |
 
 #### Methods
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `connect()` | `Promise<void>` | Connect to NoLag and join configured rooms |
-| `disconnect()` | `void` | Disconnect and clean up |
+| `ready()` | `Promise<void>` | Resolves when wrapper setup completed |
+| `detach()` | `void` | Release handlers and topics (terminal; never closes the socket) |
 | `room(name)` | `AgentRoom` | Get or create a room (auto-joins if not already joined) |
-| `subscribeLobby(slug)` | `Promise<Record>` | Subscribe to a lobby for cross-room presence |
+| `subscribeLobby(slug)` | `Promise<LobbyPresenceState>` | Subscribe to a lobby for cross-room presence |
 
 #### Properties
 
 | Property | Type | Description |
 |----------|------|-------------|
 | `agentId` | `string` | The agent's unique ID |
+| `client` | `NoLagSocket` | The injected core client |
 | `connected` | `boolean` | Whether currently connected |
 | `rooms` | `ReadonlyMap<string, AgentRoom>` | All joined rooms |
 
@@ -238,9 +281,10 @@ const agents = new NoLagAgents(token: string, options?: NoLagAgentsOptions);
 
 | Event | Payload | Description |
 |-------|---------|-------------|
-| `connected` | — | Connected to NoLag |
+| `connected` | — | Connected to NoLag (first setup complete) |
 | `disconnected` | `reason: string` | Disconnected |
-| `reconnected` | — | Reconnected after disconnect |
+| `reconnecting` | — | Connection dropped; reconnect in progress |
+| `reconnected` | — | Reconnected and restored after disconnect |
 | `error` | `Error` | Connection or protocol error |
 
 ### `AgentRoom`

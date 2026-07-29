@@ -1,357 +1,468 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-
-// Mock @nolag/js-sdk before importing NoLagCollab
-const mockClient = {
-  connected: false,
-  actorId: 'test-actor-123',
-  connect: vi.fn(),
-  disconnect: vi.fn(),
-  on: vi.fn(),
-  off: vi.fn(),
-  setApp: vi.fn(),
-};
-
-const mockRoomContext = {
-  prefix: 'collab/my-doc',
-  subscribe: vi.fn(),
-  unsubscribe: vi.fn(),
-  emit: vi.fn(),
-  on: vi.fn().mockReturnThis(),
-  off: vi.fn().mockReturnThis(),
-  setPresence: vi.fn(),
-  getPresence: vi.fn(() => ({})),
-  fetchPresence: vi.fn(() => Promise.resolve([])),
-};
-
-const mockLobbyContext = {
-  lobbyId: 'online',
-  subscribe: vi.fn(() => Promise.resolve({})),
-  unsubscribe: vi.fn(),
-  fetchPresence: vi.fn(() => Promise.resolve({})),
-  on: vi.fn().mockReturnThis(),
-  off: vi.fn().mockReturnThis(),
-};
-
-const mockAppContext = {
-  setRoom: vi.fn(() => mockRoomContext),
-  setLobby: vi.fn(() => mockLobbyContext),
-};
-
-mockClient.setApp.mockReturnValue(mockAppContext);
-
-vi.mock('@nolag/js-sdk', () => ({
-  NoLag: vi.fn(() => {
-    mockClient.connected = false;
-    mockClient.connect.mockImplementation(async () => {
-      mockClient.connected = true;
-    });
-    return mockClient;
-  }),
-}));
-
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { NoLagCollab } from '../../src/NoLagCollab';
+import { makeFakeClient, FakeNoLagClient } from '../helpers/fakeNoLagClient';
 
-describe('NoLagCollab', () => {
+/**
+ * Contract tests for the client-injection lifecycle (the canonical set —
+ * every wrapper SDK carries equivalents):
+ * 1. throws without an injected client
+ * 2. attach-to-connected microtask setup + ready()
+ * 3. once-per-epoch setup (connect vs reconnect)
+ * 4. reconnect diff-hydration
+ * 5. the leak test: detaching one wrapper leaves a co-attached wrapper intact
+ * 6. detach-while-disconnected / double-detach / post-detach + pre-ready throws
+ * 7. ready() rejects on early detach
+ * Plus collab domain tests (documents, operations, cursors, awareness,
+ * collaborator presence and colours).
+ */
+
+const flushMicrotasks = async () => {
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+};
+
+function snapshotUser(userId: string, username: string, scope?: string) {
+  return {
+    presence: { userId, username, status: 'active', ...(scope ? { __scope: scope } : {}) },
+  };
+}
+
+function makeCollab(client: FakeNoLagClient, opts: Record<string, unknown> = {}) {
+  return new NoLagCollab({
+    client: client as never,
+    username: 'Alice',
+    appName: 'collab-app',
+    ...opts,
+  });
+}
+
+describe('NoLagCollab (client injection)', () => {
+  let client: FakeNoLagClient;
+
   beforeEach(() => {
-    vi.clearAllMocks();
-    mockClient.connected = false;
-    mockClient.connect.mockImplementation(async () => {
-      mockClient.connected = true;
-    });
-    mockLobbyContext.subscribe.mockResolvedValue({});
-    mockRoomContext.fetchPresence.mockResolvedValue([]);
+    client = makeFakeClient();
   });
 
-  describe('constructor', () => {
-    it('should accept token and options', () => {
-      const collab = new NoLagCollab('test-token', { username: 'Alice' });
-      expect(collab.connected).toBe(false);
-      expect(collab.localUser).toBeNull();
-    });
-
-    it('should accept all options', () => {
-      const collab = new NoLagCollab('test-token', {
-        username: 'Alice',
-        avatar: 'https://example.com/avatar.png',
-        color: '#ff0000',
-        debug: false,
-        reconnect: true,
-        maxOperationCache: 500,
-        idleTimeout: 30000,
-        cursorThrottle: 100,
-      });
-      expect(collab.connected).toBe(false);
-    });
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
-  describe('connect', () => {
-    it('should create a NoLag client and connect', async () => {
-      const collab = new NoLagCollab('test-token', { username: 'Alice' });
-      await collab.connect();
-
-      expect(mockClient.connect).toHaveBeenCalled();
-      expect(collab.connected).toBe(true);
-      expect(collab.localUser).not.toBeNull();
-      expect(collab.localUser!.actorTokenId).toBe('test-actor-123');
-      expect(collab.localUser!.isLocal).toBe(true);
-    });
-
-    it('should assign a stable userId to local user', async () => {
-      const collab = new NoLagCollab('test-token', { username: 'Alice' });
-      await collab.connect();
-
-      expect(collab.localUser!.userId).toBeDefined();
-      expect(typeof collab.localUser!.userId).toBe('string');
-      expect(collab.localUser!.userId.length).toBeGreaterThan(0);
-    });
-
-    it('should set the username on the local user', async () => {
-      const collab = new NoLagCollab('test-token', { username: 'Bob' });
-      await collab.connect();
-
-      expect(collab.localUser!.username).toBe('Bob');
-    });
-
-    it('should subscribe to lobby', async () => {
-      const collab = new NoLagCollab('test-token', { username: 'Alice' });
-      await collab.connect();
-
-      expect(mockAppContext.setLobby).toHaveBeenCalledWith('online');
-      expect(mockLobbyContext.subscribe).toHaveBeenCalled();
-    });
-
-    it('should wire client lifecycle events', async () => {
-      const collab = new NoLagCollab('test-token', { username: 'Alice' });
-      await collab.connect();
-
-      expect(mockClient.on).toHaveBeenCalledWith('connect', expect.any(Function));
-      expect(mockClient.on).toHaveBeenCalledWith('disconnect', expect.any(Function));
-      expect(mockClient.on).toHaveBeenCalledWith('reconnect', expect.any(Function));
-      expect(mockClient.on).toHaveBeenCalledWith('error', expect.any(Function));
-    });
-
-    it('should emit connected event', async () => {
-      const collab = new NoLagCollab('test-token', { username: 'Alice' });
-      const handler = vi.fn();
-      collab.on('connected', handler);
-      await collab.connect();
-
-      expect(handler).toHaveBeenCalled();
-    });
-
-    it('should use default app name', async () => {
-      const collab = new NoLagCollab('test-token', { username: 'Alice' });
-      await collab.connect();
-
-      expect(mockClient.setApp).toHaveBeenCalledWith('collab');
-    });
-
-    it('should use custom app name when provided', async () => {
-      const collab = new NoLagCollab('test-token', { username: 'Alice', appName: 'my-app' });
-      await collab.connect();
-
-      expect(mockClient.setApp).toHaveBeenCalledWith('my-app');
-    });
-
-    it('should attach metadata to local user', async () => {
-      const collab = new NoLagCollab('test-token', {
-        username: 'Alice',
-        metadata: { role: 'admin' },
-      });
-      await collab.connect();
-
-      expect(collab.localUser!.metadata).toEqual({ role: 'admin' });
-    });
-
-    it('should attach avatar and color to local user', async () => {
-      const collab = new NoLagCollab('test-token', {
-        username: 'Alice',
-        avatar: 'https://example.com/pic.jpg',
-        color: '#00ff00',
-      });
-      await collab.connect();
-
-      expect(collab.localUser!.avatar).toBe('https://example.com/pic.jpg');
-      expect(collab.localUser!.color).toBe('#00ff00');
-    });
-
-    it('should auto-join documents specified in options', async () => {
-      const collab = new NoLagCollab('test-token', {
-        username: 'Alice',
-        documents: ['doc-a', 'doc-b'],
-      });
-      await collab.connect();
-
-      expect(collab.documents.size).toBe(2);
-      expect(collab.documents.has('doc-a')).toBe(true);
-      expect(collab.documents.has('doc-b')).toBe(true);
-    });
+  it('throws without an injected client', () => {
+    expect(() => new NoLagCollab({ username: 'Alice' } as never)).toThrow(TypeError);
   });
 
-  describe('joinDocument', () => {
-    it('should create a CollabDocument and return it', async () => {
-      const collab = new NoLagCollab('test-token', { username: 'Alice' });
-      await collab.connect();
+  it('sets up after the client connects and resolves ready()', async () => {
+    const collab = makeCollab(client);
+    const connected = vi.fn();
+    collab.on('connected', connected);
 
-      const doc = collab.joinDocument('my-doc');
+    expect(collab.localUser).toBeNull();
 
-      expect(doc).toBeDefined();
-      expect(doc.name).toBe('my-doc');
-      expect(mockAppContext.setRoom).toHaveBeenCalledWith('my-doc');
-    });
+    client.fireConnect('actor-1');
+    await flushMicrotasks();
 
-    it('should return the existing document if already joined (idempotent)', async () => {
-      const collab = new NoLagCollab('test-token', { username: 'Alice' });
-      await collab.connect();
-
-      const doc1 = collab.joinDocument('my-doc');
-      const doc2 = collab.joinDocument('my-doc');
-
-      expect(doc1).toBe(doc2);
-    });
-
-    it('should throw if not connected', () => {
-      const collab = new NoLagCollab('test-token', { username: 'Alice' });
-      expect(() => collab.joinDocument('my-doc')).toThrow('Not connected');
-    });
-
-    it('should subscribe to operations and cursors topics', async () => {
-      const collab = new NoLagCollab('test-token', { username: 'Alice' });
-      await collab.connect();
-
-      collab.joinDocument('my-doc');
-
-      expect(mockRoomContext.subscribe).toHaveBeenCalledWith('operations');
-      expect(mockRoomContext.subscribe).toHaveBeenCalledWith('_cursors');
-    });
+    await collab.ready();
+    expect(connected).toHaveBeenCalledTimes(1);
+    expect(collab.localUser?.actorTokenId).toBe('actor-1');
+    collab.detach();
   });
 
-  describe('leaveDocument', () => {
-    it('should remove the document', async () => {
-      const collab = new NoLagCollab('test-token', { username: 'Alice' });
-      await collab.connect();
+  it('attach-to-connected: runs setup via microtask when the client is already live', async () => {
+    client.fireConnect('actor-early');
+    const collab = makeCollab(client);
+    const connected = vi.fn();
+    collab.on('connected', connected); // wired synchronously, before the microtask
 
-      collab.joinDocument('my-doc');
-      collab.leaveDocument('my-doc');
+    await flushMicrotasks();
+    await collab.ready();
 
-      expect(collab.documents.size).toBe(0);
-    });
-
-    it('should be a no-op for unknown documents', async () => {
-      const collab = new NoLagCollab('test-token', { username: 'Alice' });
-      await collab.connect();
-
-      expect(() => collab.leaveDocument('nonexistent')).not.toThrow();
-    });
-
-    it('should unsubscribe from topics on leave', async () => {
-      const collab = new NoLagCollab('test-token', { username: 'Alice' });
-      await collab.connect();
-
-      collab.joinDocument('my-doc');
-      collab.leaveDocument('my-doc');
-
-      expect(mockRoomContext.unsubscribe).toHaveBeenCalledWith('operations');
-      expect(mockRoomContext.unsubscribe).toHaveBeenCalledWith('_cursors');
-    });
+    expect(connected).toHaveBeenCalledTimes(1);
+    expect(collab.localUser?.actorTokenId).toBe('actor-early');
+    collab.detach();
   });
 
-  describe('getDocuments', () => {
-    it('should return all joined documents', async () => {
-      let callCount = 0;
-      mockAppContext.setRoom.mockImplementation(() => {
-        callCount++;
-        return {
-          ...mockRoomContext,
-          prefix: `collab/room-${callCount}`,
-          subscribe: vi.fn(),
-          unsubscribe: vi.fn(),
-          emit: vi.fn(),
-          on: vi.fn().mockReturnThis(),
-          off: vi.fn().mockReturnThis(),
-          setPresence: vi.fn(),
-          getPresence: vi.fn(() => ({})),
-          fetchPresence: vi.fn(() => Promise.resolve([])),
+  it('runs setup once per epoch: reconnects emit reconnected, not connected', async () => {
+    const collab = makeCollab(client);
+    const connected = vi.fn();
+    const reconnected = vi.fn();
+    collab.on('connected', connected);
+    collab.on('reconnected', reconnected);
+
+    client.fireConnect();
+    await flushMicrotasks();
+    client.fireConnect(); // reconnect: core fires 'connect' again
+    await flushMicrotasks();
+
+    expect(connected).toHaveBeenCalledTimes(1);
+    expect(reconnected).toHaveBeenCalledTimes(1);
+    collab.detach();
+  });
+
+  it('emits reconnecting when the core fires reconnect', async () => {
+    const collab = makeCollab(client);
+    const reconnecting = vi.fn();
+    collab.on('reconnecting', reconnecting);
+
+    client.fireConnect();
+    await flushMicrotasks();
+    client.fireReconnect();
+
+    expect(reconnecting).toHaveBeenCalledTimes(1);
+    collab.detach();
+  });
+
+  it('diff-hydrates online users across reconnects', async () => {
+    client.lobbySnapshot = {
+      room1: { actorA: snapshotUser('user-a', 'Ann'), actorB: snapshotUser('user-b', 'Ben') },
+    };
+    const collab = makeCollab(client);
+    const online = vi.fn();
+    const offline = vi.fn();
+    collab.on('userOnline', online);
+    collab.on('userOffline', offline);
+
+    client.fireConnect();
+    await flushMicrotasks();
+    expect(online).toHaveBeenCalledTimes(2);
+    expect(collab.getOnlineUsers().map((u) => u.userId).sort()).toEqual(['user-a', 'user-b']);
+
+    // Reconnect with Ann gone and Cid new: exactly one offline + one online
+    client.lobbySnapshot = {
+      room1: { actorB: snapshotUser('user-b', 'Ben'), actorC: snapshotUser('user-c', 'Cid') },
+    };
+    client.fireConnect();
+    await flushMicrotasks();
+
+    expect(offline).toHaveBeenCalledTimes(1);
+    expect(offline.mock.calls[0][0].userId).toBe('user-a');
+    expect(online).toHaveBeenCalledTimes(3);
+    expect(collab.getOnlineUsers().map((u) => u.userId).sort()).toEqual(['user-b', 'user-c']);
+    collab.detach();
+  });
+
+  it('LEAK TEST: detaching one wrapper leaves a co-attached wrapper fully intact', async () => {
+    const collabA = makeCollab(client, { appName: 'app-a' });
+    const collabB = makeCollab(client, { appName: 'app-b' });
+
+    client.fireConnect();
+    await flushMicrotasks();
+    await collabA.ready();
+    await collabB.ready();
+
+    collabA.joinDocument('doc-1');
+    collabB.joinDocument('doc-1');
+
+    const bTopicHandlers = client.handlerCount('app-b/doc-1/operations');
+    const bConnectHandlersBefore = client.handlerCount('connect');
+    expect(bTopicHandlers).toBeGreaterThan(0);
+
+    collabA.detach();
+
+    // B's topic handlers and lifecycle handlers are untouched
+    expect(client.handlerCount('app-b/doc-1/operations')).toBe(bTopicHandlers);
+    expect(client.handlerCount('connect')).toBe(bConnectHandlersBefore - 1);
+    // A's topic handlers and subscriptions are gone
+    expect(client.handlerCount('app-a/doc-1/operations')).toBe(0);
+    expect(client.isSubscribed('app-a/doc-1/operations')).toBe(false);
+    expect(client.isSubscribed('app-b/doc-1/operations')).toBe(true);
+
+    // B still receives operations from remote users
+    const doc = collabB.documents.get('doc-1')!;
+    const onOp = vi.fn();
+    doc.on('operation', onOp);
+    client.fireMessage('app-b/doc-1/operations', {
+      id: 'op-1', type: 'insert', userId: 'user-x', username: 'X',
+      position: 0, content: 'hi', timestamp: Date.now(), isReplay: false,
+    }, {});
+    expect(onOp).toHaveBeenCalledTimes(1);
+    collabB.detach();
+  });
+
+  it('detach while disconnected skips server unsubscribes and removes handlers', async () => {
+    const collab = makeCollab(client);
+    client.fireConnect();
+    await flushMicrotasks();
+    collab.joinDocument('doc-1');
+
+    client.fireDisconnect();
+    client.sent = [];
+    collab.detach();
+
+    expect(client.sent.filter((s) => s.op === 'unsubscribe')).toEqual([]);
+    expect(client.sent.filter((s) => s.op === 'lobbyUnsubscribe')).toEqual([]);
+    expect(client.handledEvents()).toEqual([]);
+  });
+
+  it('double detach is a no-op and public methods throw after detach', async () => {
+    const collab = makeCollab(client);
+    client.fireConnect();
+    await flushMicrotasks();
+
+    collab.detach();
+    expect(() => collab.detach()).not.toThrow();
+    expect(() => collab.joinDocument('x')).toThrow(/detached/);
+  });
+
+  it('ready() rejects when detached before ready and joinDocument guards pre-ready', async () => {
+    const collab = makeCollab(client);
+    expect(() => collab.joinDocument('x')).toThrow(/not ready/);
+
+    const readyPromise = collab.ready();
+    collab.detach();
+    await expect(readyPromise).rejects.toThrow(/detached before ready/);
+  });
+
+  it('filters presence tagged with another app scope, accepts own and untagged', async () => {
+    const collab = makeCollab(client);
+    const online = vi.fn();
+    collab.on('userOnline', online);
+    client.fireConnect();
+    await flushMicrotasks();
+
+    client.fireLobby('join', { actorId: 'actor-own', data: { userId: 'u1', username: 'Own', status: 'active', __scope: 'collab-app' } });
+    client.fireLobby('join', { actorId: 'actor-foreign', data: { userId: 'u2', username: 'Foreign', status: 'active', __scope: 'other-app' } });
+    client.fireLobby('join', { actorId: 'actor-untagged', data: { userId: 'u3', username: 'Legacy', status: 'active' } });
+
+    expect(online).toHaveBeenCalledTimes(2);
+    expect(collab.getOnlineUsers().map((u) => u.userId).sort()).toEqual(['u1', 'u3']);
+    collab.detach();
+  });
+
+  it('runs the deferred lobby refresh and cancels it on detach', async () => {
+    vi.useFakeTimers();
+    const collab = makeCollab(client);
+    client.fireConnect();
+    await flushMicrotasks();
+
+    client.sent = [];
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(client.sent.some((s) => s.op === 'lobbyFetchPresence')).toBe(true);
+
+    // A new wrapper's pending refresh dies with detach
+    const collab2 = makeCollab(client, { appName: 'collab-app-2' });
+    client.fireConnect();
+    await flushMicrotasks();
+    client.sent = [];
+    collab2.detach();
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(client.sent.filter((s) => s.op === 'lobbyFetchPresence' && s.topic?.startsWith('collab-app-2'))).toEqual([]);
+
+    collab.detach();
+  });
+
+  it('stale setup aborts: a reconnect mid-setup wins', async () => {
+    // Make the first lobby subscribe hang until after a second connect
+    let resolveFirst: (v: Record<string, Record<string, unknown>>) => void;
+    const origSetApp = client.setApp.bind(client);
+    let call = 0;
+    (client as { setApp: typeof client.setApp }).setApp = (appName: string) => {
+      const ctx = origSetApp(appName);
+      const origSetLobby = ctx.setLobby.bind(ctx);
+      ctx.setLobby = (lobbyId: string) => {
+        const lobby = origSetLobby(lobbyId);
+        const origSubscribe = lobby.subscribe.bind(lobby);
+        lobby.subscribe = () => {
+          call++;
+          if (call === 1) {
+            return new Promise((resolve) => { resolveFirst = resolve; });
+          }
+          return origSubscribe();
         };
-      });
+        return lobby;
+      };
+      return ctx;
+    };
 
-      const collab = new NoLagCollab('test-token', { username: 'Alice' });
-      await collab.connect();
+    const collab = makeCollab(client);
+    const connected = vi.fn();
+    collab.on('connected', connected);
 
-      collab.joinDocument('doc-a');
-      collab.joinDocument('doc-b');
+    client.fireConnect(); // epoch 1: hangs in lobby subscribe
+    await flushMicrotasks();
+    client.fireConnect(); // epoch 2: completes normally
+    await flushMicrotasks();
+    resolveFirst!({}); // epoch 1 resumes, must abort silently
+    await flushMicrotasks();
 
-      expect(collab.getDocuments().length).toBe(2);
-    });
+    // Ready resolved exactly once, via epoch 2
+    await collab.ready();
+    expect(connected).toHaveBeenCalledTimes(1);
+    collab.detach();
+  });
+});
+
+describe('NoLagCollab (domain behavior)', () => {
+  let client: FakeNoLagClient;
+
+  const setup = async (opts: Record<string, unknown> = {}) => {
+    const collab = makeCollab(client, opts);
+    client.fireConnect('local-actor');
+    await flushMicrotasks();
+    await collab.ready();
+    return collab;
+  };
+
+  beforeEach(() => {
+    client = makeFakeClient();
   });
 
-  describe('disconnect', () => {
-    it('should clean up documents and disconnect client', async () => {
-      const collab = new NoLagCollab('test-token', { username: 'Alice' });
-      await collab.connect();
-      collab.joinDocument('my-doc');
-
-      collab.disconnect();
-
-      expect(collab.documents.size).toBe(0);
-      expect(mockClient.disconnect).toHaveBeenCalled();
-      expect(mockLobbyContext.unsubscribe).toHaveBeenCalled();
-      expect(collab.localUser).toBeNull();
-    });
-
-    it('should clear online users on disconnect', async () => {
-      const collab = new NoLagCollab('test-token', { username: 'Alice' });
-      await collab.connect();
-
-      collab.disconnect();
-
-      expect(collab.getOnlineUsers()).toEqual([]);
-    });
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
-  describe('getOnlineUsers', () => {
-    it('should return empty array initially', async () => {
-      const collab = new NoLagCollab('test-token', { username: 'Alice' });
-      await collab.connect();
-
-      expect(collab.getOnlineUsers()).toEqual([]);
-    });
-
-    it('should return empty array before connect', () => {
-      const collab = new NoLagCollab('test-token', { username: 'Alice' });
-      expect(collab.getOnlineUsers()).toEqual([]);
-    });
+  it('assigns a stable local user with colour/metadata/username after ready', async () => {
+    const collab = await setup({ username: 'Alice', color: '#ff0000', metadata: { role: 'editor' } });
+    expect(typeof collab.localUser!.userId).toBe('string');
+    expect(collab.localUser!.userId.length).toBeGreaterThan(0);
+    expect(collab.localUser!.username).toBe('Alice');
+    expect(collab.localUser!.color).toBe('#ff0000');
+    expect(collab.localUser!.isLocal).toBe(true);
+    expect(collab.localUser!.metadata).toEqual({ role: 'editor' });
+    collab.detach();
   });
 
-  describe('event forwarding', () => {
-    it('should emit userOnline when a remote user joins via lobby', async () => {
-      // Simulate lobby join via client event handler
-      let lobbyJoinHandler: ((data: unknown) => void) | null = null;
-      mockClient.on.mockImplementation((event: string, handler: (...args: any[]) => void) => {
-        if (event === 'lobbyPresence:join') lobbyJoinHandler = handler;
-      });
+  it('joinDocument subscribes to operations and cursors and is idempotent', async () => {
+    const collab = await setup();
+    const d1 = collab.joinDocument('doc-1');
+    const d2 = collab.joinDocument('doc-1');
 
-      const collab = new NoLagCollab('test-token', { username: 'Alice' });
-      const onlineHandler = vi.fn();
-      collab.on('userOnline', onlineHandler);
-      await collab.connect();
+    expect(d1).toBe(d2);
+    expect(d1.name).toBe('doc-1');
+    expect(client.isSubscribed('collab-app/doc-1/operations')).toBe(true);
+    expect(client.isSubscribed('collab-app/doc-1/_cursors')).toBe(true);
+    collab.detach();
+  });
 
-      lobbyJoinHandler!({
-        actorId: 'remote-actor-999',
-        data: {
-          userId: 'remote-user-999',
-          username: 'Remote Bob',
-          status: 'active',
-        },
-      });
+  it('uses a custom app name for topic prefixes', async () => {
+    const collab = await setup({ appName: 'my-app' });
+    collab.joinDocument('doc-1');
+    expect(client.isSubscribed('my-app/doc-1/operations')).toBe(true);
+    collab.detach();
+  });
 
-      expect(onlineHandler).toHaveBeenCalledWith(
-        expect.objectContaining({
-          userId: 'remote-user-999',
-          username: 'Remote Bob',
-          isLocal: false,
-        }),
-      );
+  it('auto-joins pre-configured documents on connect', async () => {
+    const collab = await setup({ documents: ['doc-a', 'doc-b'] });
+    expect(collab.documents.size).toBe(2);
+    expect(collab.documents.has('doc-a')).toBe(true);
+    expect(collab.documents.has('doc-b')).toBe(true);
+    expect(client.isSubscribed('collab-app/doc-a/operations')).toBe(true);
+    expect(client.isSubscribed('collab-app/doc-b/operations')).toBe(true);
+    collab.detach();
+  });
+
+  it('sendOperation emits on the operations topic with echo:false', async () => {
+    const collab = await setup();
+    const doc = collab.joinDocument('doc-1');
+    client.sent = [];
+    doc.sendOperation('insert', { position: 0, content: 'Hello' });
+
+    const emitted = client.sent.find((s) => s.op === 'emit' && s.topic === 'collab-app/doc-1/operations');
+    expect(emitted).toBeTruthy();
+    const op = emitted!.data as Record<string, unknown>;
+    expect(op.type).toBe('insert');
+    expect(op.content).toBe('Hello');
+    collab.detach();
+  });
+
+  it('applies a remote operation and emits operation', async () => {
+    const collab = await setup();
+    const doc = collab.joinDocument('doc-1');
+    const onOp = vi.fn();
+    doc.on('operation', onOp);
+
+    client.fireMessage('collab-app/doc-1/operations', {
+      id: 'remote-op', type: 'insert', userId: 'remote-user', username: 'Bob',
+      position: 5, content: 'Hi', timestamp: Date.now(), isReplay: false,
+    }, {});
+
+    expect(onOp).toHaveBeenCalledTimes(1);
+    expect((onOp.mock.calls[0][0] as { id: string }).id).toBe('remote-op');
+    collab.detach();
+  });
+
+  it('broadcasts cursor updates (throttled) on the _cursors topic', async () => {
+    vi.useFakeTimers();
+    const collab = await setup();
+    const doc = collab.joinDocument('doc-1');
+    client.sent = [];
+
+    doc.updateCursor({ x: 1 });
+    doc.updateCursor({ x: 2 });
+    doc.updateCursor({ x: 3 });
+
+    const cursorEmits = () => client.sent.filter((s) => s.op === 'emit' && s.topic === 'collab-app/doc-1/_cursors');
+    expect(cursorEmits().length).toBe(1); // immediate first send
+
+    vi.advanceTimersByTime(50);
+    const emits = cursorEmits();
+    expect(emits.length).toBe(2); // trailing pending flush
+    expect((emits[1].data as { x: number }).x).toBe(3);
+    collab.detach();
+  });
+
+  it('routes room presence to all joined documents and tracks online users', async () => {
+    const collab = await setup();
+    const docA = collab.joinDocument('doc-a');
+    const docB = collab.joinDocument('doc-b');
+    const joinedA = vi.fn();
+    const joinedB = vi.fn();
+    const online = vi.fn();
+    docA.on('userJoined', joinedA);
+    docB.on('userJoined', joinedB);
+    collab.on('userOnline', online);
+
+    client.firePresence('join', {
+      actorTokenId: 'actor-remote',
+      presence: { userId: 'u-remote', username: 'Bob', color: '#00ff00', status: 'active', __scope: 'collab-app' },
     });
+
+    expect(joinedA).toHaveBeenCalledTimes(1);
+    expect(joinedB).toHaveBeenCalledTimes(1);
+    expect(online).toHaveBeenCalledTimes(1);
+    expect(collab.getOnlineUsers().map((u) => u.userId)).toContain('u-remote');
+    collab.detach();
+  });
+
+  it('emits awarenessChanged when a routed collaborator goes idle', async () => {
+    vi.useFakeTimers();
+    const collab = await setup({ idleTimeout: 60000 });
+    const doc = collab.joinDocument('doc-1');
+    const idle = vi.fn();
+    doc.on('awarenessChanged', idle);
+
+    client.firePresence('join', {
+      actorTokenId: 'actor-remote',
+      presence: { userId: 'u-remote', username: 'Bob', status: 'active', __scope: 'collab-app' },
+    });
+
+    vi.advanceTimersByTime(60000);
+    expect(idle).toHaveBeenCalledWith({ userId: 'u-remote', status: 'idle' });
+    collab.detach();
+  });
+
+  it('leaveDocument unsubscribes and removes the document', async () => {
+    const collab = await setup();
+    collab.joinDocument('doc-1');
+    client.sent = [];
+    collab.leaveDocument('doc-1');
+
+    expect(collab.documents.size).toBe(0);
+    expect(client.sent.some((s) => s.op === 'unsubscribe' && s.topic === 'collab-app/doc-1/operations')).toBe(true);
+    expect(client.sent.some((s) => s.op === 'unsubscribe' && s.topic === 'collab-app/doc-1/_cursors')).toBe(true);
+    collab.detach();
+  });
+
+  it('re-applies document presence on reconnect', async () => {
+    const collab = await setup();
+    collab.joinDocument('doc-1');
+    client.sent = [];
+
+    client.fireConnect('local-actor'); // reconnect
+    await flushMicrotasks();
+
+    // Presence re-set for joined documents on restore
+    expect(client.sent.some((s) => s.op === 'setPresence' && s.topic === 'collab-app/doc-1')).toBe(true);
+    collab.detach();
   });
 });

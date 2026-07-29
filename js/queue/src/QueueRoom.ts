@@ -32,6 +32,12 @@ export class QueueRoom extends EventEmitter<QueueRoomEvents> {
   private _workerManager: WorkerManager;
   private _presenceManager: PresenceManager;
   private _log: (...args: unknown[]) => void;
+  private _isConnected: () => boolean;
+
+  // Stored topic handler refs — cleanup removes exactly these, never all
+  // handlers for a topic (the client may be shared with other consumers).
+  private _onJobsRef: ((data: unknown) => void) | null = null;
+  private _onProgressRef: ((data: unknown) => void) | null = null;
 
   /** @internal */
   constructor(
@@ -40,6 +46,7 @@ export class QueueRoom extends EventEmitter<QueueRoomEvents> {
     localWorkerId: string,
     options: ResolvedQueueOptions,
     log: (...args: unknown[]) => void,
+    isConnected: () => boolean,
   ) {
     super();
     this.name = name;
@@ -47,6 +54,7 @@ export class QueueRoom extends EventEmitter<QueueRoomEvents> {
     this._localWorkerId = localWorkerId;
     this._options = options;
     this._log = log;
+    this._isConnected = isConnected;
 
     this._jobStore = new JobStore(options.maxJobCache);
     this._workerManager = new WorkerManager();
@@ -251,13 +259,16 @@ export class QueueRoom extends EventEmitter<QueueRoomEvents> {
     }
     this._roomContext.subscribe(TOPIC_PROGRESS);
 
-    this._roomContext.on(TOPIC_JOBS, (data: unknown) => {
+    // Listen for job lifecycle messages (refs stored for handler-specific removal)
+    this._onJobsRef = (data: unknown) => {
       this._handleJobMessage(data);
-    });
+    };
+    this._roomContext.on(TOPIC_JOBS, this._onJobsRef);
 
-    this._roomContext.on(TOPIC_PROGRESS, (data: unknown) => {
+    this._onProgressRef = (data: unknown) => {
       this._handleProgressMessage(data);
-    });
+    };
+    this._roomContext.on(TOPIC_PROGRESS, this._onProgressRef);
   }
 
   /** @internal Set presence and fetch room members */
@@ -322,10 +333,19 @@ export class QueueRoom extends EventEmitter<QueueRoomEvents> {
   _cleanup(): void {
     this._log('Room cleanup:', this.name);
 
-    this._roomContext.unsubscribe(TOPIC_JOBS);
-    this._roomContext.unsubscribe(TOPIC_PROGRESS);
-    this._roomContext.off(TOPIC_JOBS);
-    this._roomContext.off(TOPIC_PROGRESS);
+    // Server unsubscribes need a live socket; skip when disconnected
+    // (best-effort — the core would no-op with an error callback anyway).
+    if (this._isConnected()) {
+      this._roomContext.unsubscribe(TOPIC_JOBS);
+      this._roomContext.unsubscribe(TOPIC_PROGRESS);
+    }
+
+    // Handler-specific removal only: the client may be shared, and a bare
+    // off(topic) would strip other consumers' handlers too.
+    if (this._onJobsRef) this._roomContext.off(TOPIC_JOBS, this._onJobsRef);
+    if (this._onProgressRef) this._roomContext.off(TOPIC_PROGRESS, this._onProgressRef);
+    this._onJobsRef = null;
+    this._onProgressRef = null;
 
     this._jobStore.clear();
     this._workerManager.clear();
@@ -409,6 +429,9 @@ export class QueueRoom extends EventEmitter<QueueRoomEvents> {
       activeJobs: 0,
       concurrency: this._options.concurrency,
       metadata: this._options.metadata,
+      // Scope tag: on a shared client, other apps' wrappers filter our
+      // presence out by this (and we filter theirs).
+      __scope: this._options.appName,
     };
     this._roomContext.setPresence(presenceData);
   }

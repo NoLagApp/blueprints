@@ -2,9 +2,18 @@
  * @nolag/track — Public types
  */
 
+import type { NoLagSocket } from '@nolag/js-sdk';
+
 // ============ Options ============
 
 export interface NoLagTrackOptions {
+  /**
+   * The injected NoLag core client. The app owns its lifecycle: create it
+   * with `NoLag(tokenOrProvider)`, call `connect()`/`disconnect()` yourself.
+   * The wrapper only attaches protocol behavior on top and releases it
+   * again via `detach()`. One wrapper per (client, appName).
+   */
+  client: NoLagSocket;
   /** Stable identifier for this asset (generated if omitted) */
   assetId?: string;
   /** Human-readable name for this asset */
@@ -13,15 +22,13 @@ export interface NoLagTrackOptions {
   metadata?: Record<string, unknown>;
   /** NoLag app name (default: 'track') */
   appName?: string;
-  /** WebSocket URL override */
-  url?: string;
   /** Maximum location history entries per asset (default: 500) */
   maxLocationHistory?: number;
   /** Enable debug logging (default: false) */
   debug?: boolean;
-  /** Auto-reconnect on disconnect (default: true) */
-  reconnect?: boolean;
-  /** Client-side geofence zones to register on connect */
+  /** Tracking zones (rooms) to auto-join on connect */
+  zoneNames?: string[];
+  /** Client-side geofence zones to register on every joined zone */
   zones?: Geofence[];
 }
 
@@ -31,10 +38,9 @@ export interface ResolvedTrackOptions {
   assetName?: string;
   metadata?: Record<string, unknown>;
   appName: string;
-  url?: string;
   maxLocationHistory: number;
   debug: boolean;
-  reconnect: boolean;
+  zoneNames: string[];
   zones: Geofence[];
 }
 
@@ -153,6 +159,7 @@ export interface TrackPresenceData {
 export interface TrackClientEvents {
   connected: [];
   disconnected: [reason: string];
+  reconnecting: [];
   reconnected: [];
   error: [error: Error];
   assetOnline: [asset: TrackedAsset];

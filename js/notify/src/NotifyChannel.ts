@@ -23,7 +23,13 @@ export class NotifyChannel extends EventEmitter<NotifyChannelEvents> {
   private _options: ResolvedNotifyOptions;
   private _store: NotificationStore;
   private _log: (...args: unknown[]) => void;
+  private _isConnected: () => boolean;
   private _active = false;
+
+  // Stored topic handler refs — cleanup removes exactly these, never all
+  // handlers for a topic (the client may be shared with other consumers).
+  private _onNotificationsRef: ((data: unknown, meta: MessageMeta) => void) | null = null;
+  private _onReadRef: ((data: unknown) => void) | null = null;
 
   /** @internal */
   constructor(
@@ -31,6 +37,7 @@ export class NotifyChannel extends EventEmitter<NotifyChannelEvents> {
     roomContext: RoomContext,
     options: ResolvedNotifyOptions,
     log: (...args: unknown[]) => void,
+    isConnected: () => boolean,
   ) {
     super();
     this.name = name;
@@ -38,6 +45,7 @@ export class NotifyChannel extends EventEmitter<NotifyChannelEvents> {
     this._options = options;
     this._store = new NotificationStore(options.maxNotificationCache);
     this._log = log;
+    this._isConnected = isConnected;
   }
 
   // ============ Public Properties ============
@@ -133,13 +141,16 @@ export class NotifyChannel extends EventEmitter<NotifyChannelEvents> {
     this._roomContext.subscribe(TOPIC_NOTIFICATIONS);
     this._roomContext.subscribe(TOPIC_READ);
 
-    this._roomContext.on(TOPIC_NOTIFICATIONS, (data: unknown, meta: MessageMeta) => {
+    // Listen for notifications (refs stored for handler-specific removal)
+    this._onNotificationsRef = (data: unknown, meta: MessageMeta) => {
       this._handleIncomingNotification(data, meta);
-    });
+    };
+    this._roomContext.on(TOPIC_NOTIFICATIONS, this._onNotificationsRef);
 
-    this._roomContext.on(TOPIC_READ, (data: unknown) => {
+    this._onReadRef = (data: unknown) => {
       this._handleIncomingRead(data);
-    });
+    };
+    this._roomContext.on(TOPIC_READ, this._onReadRef);
   }
 
   /** @internal Activate this channel (mark as visible/active) */
@@ -168,10 +179,19 @@ export class NotifyChannel extends EventEmitter<NotifyChannelEvents> {
   _cleanup(): void {
     this._log('Channel cleanup:', this.name);
 
-    this._roomContext.unsubscribe(TOPIC_NOTIFICATIONS);
-    this._roomContext.unsubscribe(TOPIC_READ);
-    this._roomContext.off(TOPIC_NOTIFICATIONS);
-    this._roomContext.off(TOPIC_READ);
+    // Server unsubscribes need a live socket; skip when disconnected
+    // (best-effort — the core would no-op with an error callback anyway).
+    if (this._isConnected()) {
+      this._roomContext.unsubscribe(TOPIC_NOTIFICATIONS);
+      this._roomContext.unsubscribe(TOPIC_READ);
+    }
+
+    // Handler-specific removal only: the client may be shared, and a bare
+    // off(topic) would strip other consumers' handlers too.
+    if (this._onNotificationsRef) this._roomContext.off(TOPIC_NOTIFICATIONS, this._onNotificationsRef);
+    if (this._onReadRef) this._roomContext.off(TOPIC_READ, this._onReadRef);
+    this._onNotificationsRef = null;
+    this._onReadRef = null;
 
     this._store.clear();
     this.removeAllListeners();

@@ -12,3 +12,6 @@ export const TOPIC_GEOFENCE = '_geofence';
 
 /** Lobby ID for global online presence */
 export const LOBBY_ID = 'online';
+
+/** Delay before the post-setup lobby presence refetch (catches simultaneous joiners) */
+export const LOBBY_REFRESH_DELAY_MS = 2000;

@@ -12,7 +12,11 @@ function createMockRoomContext() {
     unsubscribe: vi.fn(),
     emit: vi.fn(),
     on: vi.fn((topic: string, handler: MessageHandler) => { handlers.set(topic, handler); return ctx; }),
-    off: vi.fn((topic: string) => { handlers.delete(topic); return ctx; }),
+    // Handler-specific removal: only remove when the stored ref matches.
+    off: vi.fn((topic: string, handler?: MessageHandler) => {
+      if (!handler || handlers.get(topic) === handler) handlers.delete(topic);
+      return ctx;
+    }),
     setPresence: vi.fn(),
     fetchPresence: vi.fn(() => Promise.resolve([])),
     _handlers: handlers,
@@ -22,7 +26,7 @@ function createMockRoomContext() {
 }
 
 function createOptions(): ResolvedNotifyOptions {
-  return { appName: 'notify', maxNotificationCache: 500, debug: false, reconnect: true, channels: [] };
+  return { appName: 'notify', maxNotificationCache: 500, debug: false, channels: [] };
 }
 
 describe('NotifyChannel', () => {
@@ -31,7 +35,8 @@ describe('NotifyChannel', () => {
 
   beforeEach(() => {
     ctx = createMockRoomContext();
-    channel = new NotifyChannel('alerts', ctx, createOptions(), () => {});
+    // isConnected returns true so cleanup exercises server unsubscribes.
+    channel = new NotifyChannel('alerts', ctx, createOptions(), () => {}, () => true);
   });
 
   it('should subscribe to notifications and _read topics', () => {

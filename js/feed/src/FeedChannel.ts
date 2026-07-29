@@ -10,6 +10,12 @@ import type {
   FeedPresenceData, ResolvedFeedOptions, CreatePostOptions,
 } from './types';
 
+/**
+ * FeedChannel — a single feed channel with posts, comments, reactions, and
+ * presence.
+ *
+ * Created via `NoLagFeed.joinChannel(name)`. Do not instantiate directly.
+ */
 export class FeedChannel extends EventEmitter<FeedChannelEvents> {
   readonly name: string;
 
@@ -21,12 +27,21 @@ export class FeedChannel extends EventEmitter<FeedChannelEvents> {
   private _reactionManager: ReactionManager;
   private _comments = new Map<string, FeedComment[]>();
   private _log: (...args: unknown[]) => void;
+  private _isConnected: () => boolean;
   private _unreadCount = 0;
   private _active = false;
 
+  // Stored topic handler refs — cleanup removes exactly these, never all
+  // handlers for a topic (the client may be shared with other consumers).
+  private _onPostsRef: ((data: unknown, meta: MessageMeta) => void) | null = null;
+  private _onReactionsRef: ((data: unknown) => void) | null = null;
+  private _onCommentsRef: ((data: unknown, meta: MessageMeta) => void) | null = null;
+
+  /** @internal */
   constructor(
     name: string, roomContext: RoomContext, localUser: FeedUser,
     options: ResolvedFeedOptions, log: (...args: unknown[]) => void,
+    isConnected: () => boolean,
   ) {
     super();
     this.name = name;
@@ -34,6 +49,7 @@ export class FeedChannel extends EventEmitter<FeedChannelEvents> {
     this._localUser = localUser;
     this._options = options;
     this._log = log;
+    this._isConnected = isConnected;
     this._presenceManager = new PresenceManager(localUser.actorTokenId);
     this._postStore = new PostStore(options.maxPostCache);
     this._reactionManager = new ReactionManager();
@@ -108,14 +124,31 @@ export class FeedChannel extends EventEmitter<FeedChannelEvents> {
 
   getUsers(): FeedUser[] { return this._presenceManager.getAll(); }
 
+  /** @internal Subscribe to post/reaction/comment topics and attach listeners (all channels) */
   _subscribe(): void {
+    this._log('Channel subscribe:', this.name);
+
     this._roomContext.subscribe(TOPIC_POSTS);
     this._roomContext.subscribe(TOPIC_REACTIONS);
     this._roomContext.subscribe(TOPIC_COMMENTS);
 
-    this._roomContext.on(TOPIC_POSTS, (data: unknown, meta: MessageMeta) => this._handleIncomingPost(data, meta));
-    this._roomContext.on(TOPIC_REACTIONS, (data: unknown) => this._handleIncomingReaction(data));
-    this._roomContext.on(TOPIC_COMMENTS, (data: unknown, meta: MessageMeta) => this._handleIncomingComment(data, meta));
+    // Listen for posts (refs stored for handler-specific removal)
+    this._onPostsRef = (data: unknown, meta: MessageMeta) => {
+      this._handleIncomingPost(data, meta);
+    };
+    this._roomContext.on(TOPIC_POSTS, this._onPostsRef);
+
+    // Listen for reactions
+    this._onReactionsRef = (data: unknown) => {
+      this._handleIncomingReaction(data);
+    };
+    this._roomContext.on(TOPIC_REACTIONS, this._onReactionsRef);
+
+    // Listen for comments
+    this._onCommentsRef = (data: unknown, meta: MessageMeta) => {
+      this._handleIncomingComment(data, meta);
+    };
+    this._roomContext.on(TOPIC_COMMENTS, this._onCommentsRef);
   }
 
   _activate(): void {
@@ -153,13 +186,27 @@ export class FeedChannel extends EventEmitter<FeedChannelEvents> {
 
   _updateLocalPresence(): void { this._setPresence(); }
 
+  /** @internal Unsubscribe and clean up */
   _cleanup(): void {
-    this._roomContext.unsubscribe(TOPIC_POSTS);
-    this._roomContext.unsubscribe(TOPIC_REACTIONS);
-    this._roomContext.unsubscribe(TOPIC_COMMENTS);
-    this._roomContext.off(TOPIC_POSTS);
-    this._roomContext.off(TOPIC_REACTIONS);
-    this._roomContext.off(TOPIC_COMMENTS);
+    this._log('Channel cleanup:', this.name);
+
+    // Server unsubscribes need a live socket; skip when disconnected
+    // (best-effort — the core would no-op with an error callback anyway).
+    if (this._isConnected()) {
+      this._roomContext.unsubscribe(TOPIC_POSTS);
+      this._roomContext.unsubscribe(TOPIC_REACTIONS);
+      this._roomContext.unsubscribe(TOPIC_COMMENTS);
+    }
+
+    // Handler-specific removal only: the client may be shared, and a bare
+    // off(topic) would strip other consumers' handlers too.
+    if (this._onPostsRef) this._roomContext.off(TOPIC_POSTS, this._onPostsRef);
+    if (this._onReactionsRef) this._roomContext.off(TOPIC_REACTIONS, this._onReactionsRef);
+    if (this._onCommentsRef) this._roomContext.off(TOPIC_COMMENTS, this._onCommentsRef);
+    this._onPostsRef = null;
+    this._onReactionsRef = null;
+    this._onCommentsRef = null;
+
     this._postStore.clear();
     this._reactionManager.clear();
     this._comments.clear();
@@ -221,6 +268,9 @@ export class FeedChannel extends EventEmitter<FeedChannelEvents> {
     this._roomContext.setPresence({
       userId: this._localUser.userId, username: this._localUser.username,
       avatar: this._localUser.avatar, metadata: this._localUser.metadata,
+      // Scope tag: on a shared client, other apps' wrappers filter our
+      // presence out by this (and we filter theirs).
+      __scope: this._options.appName,
     } as FeedPresenceData);
   }
 }

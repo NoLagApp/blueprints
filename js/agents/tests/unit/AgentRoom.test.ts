@@ -8,22 +8,28 @@ function createMockRoomContext() {
       if (!listeners.has(topic)) listeners.set(topic, []);
       listeners.get(topic)!.push(handler);
     }),
-    emit: vi.fn(),
+    off: vi.fn((topic: string, handler?: (data: any) => void) => {
+      if (!handler) { listeners.delete(topic); return; }
+      const arr = listeners.get(topic);
+      if (arr) listeners.set(topic, arr.filter((h) => h !== handler));
+    }),
     subscribe: vi.fn(),
+    unsubscribe: vi.fn(),
+    emit: vi.fn(),
     setPresence: vi.fn(),
     fetchPresence: vi.fn().mockResolvedValue([]),
     // Helper to simulate incoming messages
     _trigger(topic: string, data: any) {
       for (const h of listeners.get(topic) ?? []) h(data);
     },
+    _handlerCount(topic: string) {
+      return listeners.get(topic)?.length ?? 0;
+    },
   };
 }
 
-function createMockClient() {
-  return { on: vi.fn(), off: vi.fn() };
-}
-
 const AGENT_ID = "agent-under-test";
+const APP_NAME = "agents";
 
 describe("AgentRoom", () => {
   let ctx: ReturnType<typeof createMockRoomContext>;
@@ -33,7 +39,7 @@ describe("AgentRoom", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     ctx = createMockRoomContext();
-    room = new AgentRoom("test-room", ctx, createMockClient(), log, AGENT_ID);
+    room = new AgentRoom("test-room", ctx as any, log, AGENT_ID, APP_NAME, () => true);
   });
 
   // --- Subscription semantics (load balancing + directed replies) ---
@@ -290,5 +296,68 @@ describe("AgentRoom", () => {
     ctx._trigger("tools", data);
     expect(reqHandler).toHaveBeenCalledWith(data);
     expect(resHandler).not.toHaveBeenCalled();
+  });
+
+  // --- Scoped-unit presence routing (parent routes; room registers) ---
+
+  it("registers a joined agent and exposes it via service discovery", () => {
+    const join = vi.fn();
+    room.on("presenceJoin", join);
+    room._handlePresenceJoin("peer-1", { name: "Peer", role: "agent", capabilities: ["summarize"], protocol: 2 });
+
+    expect(join).toHaveBeenCalledWith("peer-1", expect.objectContaining({ name: "Peer" }));
+    expect(room.findAgents("summarize").map((a) => a.actorId)).toEqual(["peer-1"]);
+    expect(room.hasCapability("summarize")).toBe(true);
+  });
+
+  it("removes an agent on presence leave", () => {
+    const leave = vi.fn();
+    room.on("presenceLeave", leave);
+    room._handlePresenceJoin("peer-1", { name: "Peer", capabilities: ["x"] });
+    room._handlePresenceLeave("peer-1");
+    expect(leave).toHaveBeenCalledWith("peer-1");
+    expect(room.getConnectedAgents()).toHaveLength(0);
+  });
+
+  it("updates an agent's registry entry on presence update", () => {
+    room._handlePresenceJoin("peer-1", { name: "Peer", capabilities: ["x"] });
+    room._handlePresenceUpdate("peer-1", { capabilities: ["x", "y"] });
+    expect(room.getAvailableCapabilities().sort()).toEqual(["x", "y"]);
+  });
+
+  // --- Scoped-unit cleanup (handler-specific off + gated unsubscribe) ---
+
+  it("cleanup removes only this room's topic handlers and unsubscribes when connected", () => {
+    // Another consumer shares the tasks topic on the same context
+    const otherHandler = vi.fn();
+    ctx.on("tasks", otherHandler);
+    const beforeTasks = ctx._handlerCount("tasks");
+
+    room._cleanup();
+
+    // The room's own tasks handler is gone; the co-consumer's survives.
+    expect(ctx._handlerCount("tasks")).toBe(beforeTasks - 1);
+    ctx._trigger("tasks", { type: "task", taskId: "t1" });
+    expect(otherHandler).toHaveBeenCalledTimes(1);
+    // Server unsubscribe issued (connected)
+    expect(ctx.unsubscribe).toHaveBeenCalledWith("tasks");
+  });
+
+  it("cleanup while disconnected skips server unsubscribes", () => {
+    const discRoom = new AgentRoom("d", ctx as any, log, AGENT_ID, APP_NAME, () => false);
+    (ctx.unsubscribe as any).mockClear();
+    discRoom._cleanup();
+    expect(ctx.unsubscribe).not.toHaveBeenCalled();
+  });
+
+  it("presence is stamped with the app __scope tag", () => {
+    const scopedCtx = createMockRoomContext();
+    new AgentRoom("s", scopedCtx as any, log, AGENT_ID, "my-app", () => true, {
+      name: "me",
+      role: "agent",
+    });
+    const call = (scopedCtx.setPresence as any).mock.calls[0][0];
+    expect(call.__scope).toBe("my-app");
+    expect(call.name).toBe("me");
   });
 });

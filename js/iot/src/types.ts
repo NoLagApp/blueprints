@@ -2,6 +2,8 @@
  * @nolag/iot — Public types
  */
 
+import type { NoLagSocket } from '@nolag/js-sdk';
+
 // ============ Options ============
 
 export type DeviceRole = 'device' | 'controller';
@@ -9,6 +11,11 @@ export type DeviceRole = 'device' | 'controller';
 export type CommandStatus = 'pending' | 'acked' | 'completed' | 'failed' | 'timeout';
 
 export interface NoLagIoTOptions {
+  /**
+   * The core NoLag client to attach to (owned by the app, not the wrapper).
+   * REQUIRED. The wrapper never connects or disconnects the socket.
+   */
+  client: NoLagSocket;
   /** Stable device identifier (generated if omitted) */
   deviceId?: string;
   /** Human-readable device name */
@@ -19,16 +26,12 @@ export interface NoLagIoTOptions {
   metadata?: Record<string, unknown>;
   /** NoLag app name (default: 'iot') */
   appName?: string;
-  /** WebSocket URL override */
-  url?: string;
   /** Max telemetry readings to retain per device/sensor key (default: 1000) */
   maxTelemetryPoints?: number;
   /** Command acknowledgement timeout in ms (default: 30000) */
   commandTimeout?: number;
   /** Enable debug logging (default: false) */
   debug?: boolean;
-  /** Auto-reconnect on disconnect (default: true) */
-  reconnect?: boolean;
   /** Initial groups to join after connect */
   groups?: string[];
 }
@@ -40,11 +43,9 @@ export interface ResolvedIoTOptions {
   role: DeviceRole;
   metadata?: Record<string, unknown>;
   appName: string;
-  url?: string;
   maxTelemetryPoints: number;
   commandTimeout: number;
   debug: boolean;
-  reconnect: boolean;
   groups: string[];
 }
 
@@ -129,6 +130,8 @@ export interface IoTPresenceData {
   deviceName?: string;
   role: DeviceRole;
   metadata?: Record<string, unknown>;
+  /** Scope tag: the wrapper's appName, so other apps' wrappers filter this out */
+  __scope?: string;
 }
 
 // ============ Event Maps ============
@@ -136,6 +139,7 @@ export interface IoTPresenceData {
 export interface IoTClientEvents {
   connected: [];
   disconnected: [reason: string];
+  reconnecting: [];
   reconnected: [];
   error: [error: Error];
   deviceOnline: [device: Device];

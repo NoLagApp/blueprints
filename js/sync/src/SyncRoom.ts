@@ -1,4 +1,4 @@
-import type { RoomContext } from '@nolag/js-sdk';
+import type { RoomContext, MessageMeta } from '@nolag/js-sdk';
 import { EventEmitter } from './EventEmitter';
 import { DocumentStore } from './DocumentStore';
 import { ConflictResolver } from './ConflictResolver';
@@ -31,6 +31,11 @@ export class SyncRoom extends EventEmitter<SyncRoomEvents> {
   private _resolver: ConflictResolver;
   private _presenceManager: PresenceManager;
   private _log: (...args: unknown[]) => void;
+  private _isConnected: () => boolean;
+
+  // Stored topic handler ref — cleanup removes exactly this, never all
+  // handlers for a topic (the client may be shared with other consumers).
+  private _onChangesRef: ((data: unknown, meta: MessageMeta) => void) | null = null;
 
   /** @internal */
   constructor(
@@ -39,6 +44,7 @@ export class SyncRoom extends EventEmitter<SyncRoomEvents> {
     localCollaborator: SyncCollaborator,
     options: ResolvedSyncOptions,
     log: (...args: unknown[]) => void,
+    isConnected: () => boolean,
   ) {
     super();
     this.name = name;
@@ -46,6 +52,7 @@ export class SyncRoom extends EventEmitter<SyncRoomEvents> {
     this._localCollaborator = localCollaborator;
     this._options = options;
     this._log = log;
+    this._isConnected = isConnected;
 
     this._store = new DocumentStore();
     this._resolver = new ConflictResolver();
@@ -134,9 +141,11 @@ export class SyncRoom extends EventEmitter<SyncRoomEvents> {
 
     this._roomContext.subscribe(TOPIC_CHANGES);
 
-    this._roomContext.on(TOPIC_CHANGES, (data: unknown) => {
+    // Listen for changes (ref stored for handler-specific removal)
+    this._onChangesRef = (data: unknown) => {
       this._handleIncomingChange(data);
-    });
+    };
+    this._roomContext.on(TOPIC_CHANGES, this._onChangesRef);
   }
 
   /** @internal Set presence and fetch room members */
@@ -195,8 +204,16 @@ export class SyncRoom extends EventEmitter<SyncRoomEvents> {
   _cleanup(): void {
     this._log('Room cleanup:', this.name);
 
-    this._roomContext.unsubscribe(TOPIC_CHANGES);
-    this._roomContext.off(TOPIC_CHANGES);
+    // Server unsubscribes need a live socket; skip when disconnected
+    // (best-effort — the core would no-op with an error callback anyway).
+    if (this._isConnected()) {
+      this._roomContext.unsubscribe(TOPIC_CHANGES);
+    }
+
+    // Handler-specific removal only: the client may be shared, and a bare
+    // off(topic) would strip other consumers' handlers too.
+    if (this._onChangesRef) this._roomContext.off(TOPIC_CHANGES, this._onChangesRef);
+    this._onChangesRef = null;
 
     this._store.clear();
     this._presenceManager.clear();
@@ -275,6 +292,9 @@ export class SyncRoom extends EventEmitter<SyncRoomEvents> {
       userId: this._localCollaborator.userId,
       username: this._localCollaborator.username,
       metadata: this._localCollaborator.metadata,
+      // Scope tag: on a shared client, other apps' wrappers filter our
+      // presence out by this (and we filter theirs).
+      __scope: this._options.appName,
     };
     this._roomContext.setPresence(presenceData);
   }
