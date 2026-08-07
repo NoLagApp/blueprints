@@ -12,7 +12,8 @@ class NoLagAgentsOptions:
     rooms: list[str] = field(default_factory=lambda: ["default-workflow"])
     lobby: Optional[str] = None
     presence: Optional[AgentPresenceData] = None
-    client_options: Optional[dict[str, Any]] = None
+    # Removed: client_options. Connection settings (url, reconnect, heartbeat)
+    # belong to the NoLag client you construct and inject.
     load_balance: bool = False
     load_balance_group: Optional[str] = None
     load_balance_topics: Optional[list[str]] = None

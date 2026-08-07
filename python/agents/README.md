@@ -1,5 +1,23 @@
 # nolag-agents
 
+## Injected client
+
+This SDK takes an **injected** NoLag client. Your application creates, connects,
+and disconnects the client; the wrapper only attaches to it. One connection can
+therefore be shared by several wrappers, and releasing one never disturbs the
+others.
+
+| Step | Call | Notes |
+|---|---|---|
+| Attach | `NoLagAgents(client, options)` | Registers handlers immediately, before the client connects |
+| Wait | `await x.ready()` | Resolves once wrapper setup completes; re-runs on reconnect |
+| Release | `await x.detach()` | Terminal, idempotent, **never disconnects the client** |
+
+`detach()` removes exactly this wrapper's handlers, so a sibling wrapper on the
+same client keeps working. Connection settings (url, reconnect, heartbeat) live
+on the client you construct, not in this SDK's options.
+
+
 > Protocol contract (topics, directed replies, NACKs, version advertisement): [docs/AGENTS-PROTOCOL.md](../../docs/AGENTS-PROTOCOL.md)
 
 Multi-agent coordination SDK for Python, built on the [nolag](https://pypi.org/project/nolag/) real-time SDK.
@@ -19,14 +37,18 @@ Requires Python 3.10+ and `nolag>=2.1.0` (installed automatically).
 ### Orchestrator
 
 ```python
+from nolag import NoLag
 from nolag_agents import NoLagAgents, NoLagAgentsOptions, AgentPresenceData
 from nolag_agents.patterns import Handoff
 
-agents = NoLagAgents(ORCHESTRATOR_TOKEN, NoLagAgentsOptions(
+client = NoLag(ORCHESTRATOR_TOKEN)
+await client.connect()
+
+agents = NoLagAgents(client, NoLagAgentsOptions(
     app_name="my-agents",
     presence=AgentPresenceData(name="orchestrator", role="orchestrator", capabilities=["dispatch"]),
 ))
-await agents.connect()
+await agents.ready()
 
 room = await agents.room("default-workflow")
 handoff = Handoff(room)
@@ -41,14 +63,18 @@ print("Result:", result.payload)
 ### Worker
 
 ```python
+from nolag import NoLag
 from nolag_agents import NoLagAgents, NoLagAgentsOptions, AgentPresenceData
 from nolag_agents.patterns import Handoff
 
-agents = NoLagAgents(WORKER_TOKEN, NoLagAgentsOptions(
+client = NoLag(WORKER_TOKEN)
+await client.connect()
+
+agents = NoLagAgents(client, NoLagAgentsOptions(
     app_name="my-agents",
     presence=AgentPresenceData(name="summarizer", role="worker", capabilities=["summarize"]),
 ))
-await agents.connect()
+await agents.ready()
 
 room = await agents.room("default-workflow")
 handoff = Handoff(room)
@@ -176,7 +202,10 @@ observe.on("task_started", lambda event: print(event.payload))
 Distribute tasks across a pool of workers. When enabled, NoLag routes each message to only one subscriber in the group.
 
 ```python
-agents = NoLagAgents(WORKER_TOKEN, NoLagAgentsOptions(
+client = NoLag(WORKER_TOKEN)
+await client.connect()
+
+agents = NoLagAgents(client, NoLagAgentsOptions(
     app_name="my-agents",
     presence=AgentPresenceData(name="worker-1", role="worker", capabilities=["process"]),
     load_balance=True,
@@ -189,12 +218,15 @@ agents = NoLagAgents(WORKER_TOKEN, NoLagAgentsOptions(
 Observe agent presence across multiple rooms at once. Useful for dashboards and orchestrator discovery.
 
 ```python
-agents = NoLagAgents(TOKEN, NoLagAgentsOptions(
+client = NoLag(TOKEN)
+await client.connect()
+
+agents = NoLagAgents(client, NoLagAgentsOptions(
     app_name="my-agents",
     lobby="agent-dashboard",
     presence=AgentPresenceData(name="monitor", role="observer"),
 ))
-await agents.connect()
+await agents.ready()
 
 room = await agents.room("default-workflow")
 connected = room.get_connected_agents()

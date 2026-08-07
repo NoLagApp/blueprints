@@ -36,6 +36,6 @@ class SignalPresenceData:
 class NoLagSignalOptions:
     metadata: dict[str, Any] | None = None
     app_name: str = "signal"
-    url: str | None = None
     debug: bool = False
-    reconnect: bool = True
+    # Removed: url, reconnect. Connection settings belong to the NoLag client
+    # you construct and inject.

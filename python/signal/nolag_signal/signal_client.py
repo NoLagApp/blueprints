@@ -77,14 +77,31 @@ class NoLagSignal(EventEmitter):
         peer_offline(peer: Peer) — Peer went offline (global)
     """
 
-    def __init__(self, token: str, options: NoLagSignalOptions | None = None) -> None:
+    def __init__(self, client: Any, options: NoLagSignalOptions | None = None) -> None:
+        """Attach to an injected NoLag client.
+
+        The application owns the connection: it creates the client, connects it,
+        and disconnects it. This wrapper only attaches, so one connection can be
+        shared by several wrappers.
+
+            client = NoLag(token)
+            await client.connect()
+            signal = NoLagSignal(client)
+            await signal.ready()
+            ...
+            await signal.detach()   # leaves the connection open
+        """
         super().__init__()
-        self._token = token
+        if client is None:
+            raise TypeError(
+                "NoLagSignal requires an injected NoLag client: "
+                "NoLagSignal(client, options). Create and connect the client yourself."
+            )
         self._options = options or NoLagSignalOptions()
         self._peer_id = str(uuid.uuid4())
         self._log = _create_logger("NoLagSignal", self._options.debug)
 
-        self._client: Any = None
+        self._client: Any = client
         self._local_peer: Peer | None = None
         self._rooms: dict[str, SignalRoom] = {}
         self._online_peers: dict[str, Peer] = {}  # peerId -> Peer
@@ -92,11 +109,46 @@ class NoLagSignal(EventEmitter):
         self._lobby: Any = None
         self._connected = False
 
+        self._detached = False
+        self._is_ready = False
+        self._ready_event = asyncio.Event()
+        self._ready_error: BaseException | None = None
+        self._setup_task: Any = None
+
+        # Construction = attach. Stored refs so detach() removes exactly ours and
+        # leaves any sibling wrapper on this client untouched.
+        self._client_handlers: list[tuple[str, Any]] = [
+            ("connect", self._on_connect),
+            ("disconnect", self._on_disconnect),
+            ("reconnect", self._on_reconnect),
+            ("error", self._on_error),
+            ("presence:join", self._handle_room_presence_join),
+            ("presence:leave", self._handle_room_presence_leave),
+            ("presence:update", self._handle_room_presence_update),
+        ]
+        for event, handler in self._client_handlers:
+            self._client.on(event, handler)
+
+        if getattr(self._client, "connected", False):
+            self._schedule_setup()
+
     # -- Public properties --
 
     @property
     def connected(self) -> bool:
-        return self._connected
+        """Whether the injected client is connected and this wrapper is attached."""
+        if self._detached:
+            return False
+        return bool(getattr(self._client, "connected", self._connected))
+
+    @property
+    def detached(self) -> bool:
+        return self._detached
+
+    @property
+    def client(self) -> Any:
+        """The injected client, owned by the application, not this wrapper."""
+        return self._client
 
     @property
     def local_peer(self) -> Peer | None:
@@ -108,35 +160,53 @@ class NoLagSignal(EventEmitter):
 
     # -- Public methods --
 
-    async def connect(self) -> None:
-        """Connect to NoLag and set up lobby for global presence."""
-        if NoLag is None:
-            raise ImportError("nolag package is required: pip install nolag>=2.0.0")
+    async def ready(self) -> None:
+        """Wait until wrapper setup completes.
+
+        Resolves once the local peer is established and the lobby is subscribed.
+        Raises RuntimeError if detach() happened first. Safe to await repeatedly.
+        """
+        if self._detached and not self._is_ready:
+            raise RuntimeError("NoLagSignal detached before ready")
+        if (
+            not self._is_ready
+            and self._setup_task is None
+            and getattr(self._client, "connected", False)
+        ):
+            self._schedule_setup()
+        await self._ready_event.wait()
+        if self._ready_error is not None:
+            raise self._ready_error
+
+    def _schedule_setup(self) -> None:
+        """Kick a setup pass. Client events are sync, so setup runs as a task."""
+        if self._detached:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # Constructed outside a running loop; ready() will start setup.
+            return
+        self._setup_task = loop.create_task(self._run_setup())
+
+    async def _run_setup(self) -> None:
+        try:
+            await self._setup()
+        except Exception as err:  # noqa: BLE001 - surfaced through ready()
+            if self._detached:
+                return
+            self._log(f"setup failed: {err}")
+            if not self._is_ready:
+                self._ready_error = err
+                self._ready_event.set()
+            self.emit("error", err)
+
+    async def _setup(self) -> None:
+        """Establish the local peer and subscribe the lobby."""
+        if self._detached:
+            return
 
         app_name = self._options.app_name or DEFAULT_APP_NAME
-
-        client_options = NoLagOptions(
-            debug=self._options.debug,
-            reconnect=self._options.reconnect,
-        )
-        if self._options.url:
-            client_options.url = self._options.url
-
-        self._client = NoLag(self._token, client_options)
-
-        # Wire lifecycle events
-        self._client.on("connect", self._on_connect)
-        self._client.on("disconnect", self._on_disconnect)
-        self._client.on("reconnect", self._on_reconnect)
-        self._client.on("error", self._on_error)
-
-        # Wire presence events (room-level)
-        self._client.on("presence:join", self._handle_room_presence_join)
-        self._client.on("presence:leave", self._handle_room_presence_leave)
-        self._client.on("presence:update", self._handle_room_presence_update)
-
-        # Connect
-        await self._client.connect()
 
         # Create local peer
         self._local_peer = Peer(
@@ -163,28 +233,61 @@ class NoLagSignal(EventEmitter):
         self._hydrate_online_peers(state)
 
         self._connected = True
-        self.emit("connected")
+        was_ready = self._is_ready
+        self._is_ready = True
+        if not was_ready:
+            self._ready_event.set()
+            self.emit("connected")
+        else:
+            self.emit("reconnected")
 
-        # Deferred refetch after 2s to catch peers who joined during setup
-        asyncio.get_event_loop().call_later(2.0, lambda: asyncio.ensure_future(self._deferred_refetch()))
+        # Deferred refetch after 2s to catch peers who joined during setup.
+        # get_running_loop, since Python 3.12 no longer provides an implicit loop.
+        asyncio.get_running_loop().call_later(
+            2.0, lambda: asyncio.ensure_future(self._deferred_refetch())
+        )
 
-    def disconnect(self) -> None:
-        """Clean up rooms, lobby, and client connection."""
+    async def detach(self) -> None:
+        """Release the wrapper. Terminal and idempotent.
+
+        Removes this wrapper's handlers, leaves its rooms, and unsubscribes its
+        lobby. It never disconnects the injected client, so any sibling wrapper
+        sharing that connection keeps working.
+        """
+        if self._detached:
+            return
+        self._detached = True
+        self._log("detaching...")
+
+        off = getattr(self._client, "off", None)
+        if callable(off):
+            for event, handler in self._client_handlers:
+                off(event, handler)
+        self._client_handlers.clear()
+
         for name in list(self._rooms.keys()):
-            asyncio.ensure_future(self._leave_room_async(name))
+            try:
+                await self._leave_room_async(name)
+            except Exception as err:  # noqa: BLE001 - teardown is best-effort
+                self._log(f"leave room {name} failed: {err}")
 
         if self._lobby:
-            self._lobby.unsubscribe()
+            try:
+                self._lobby.unsubscribe()
+            except Exception as err:  # noqa: BLE001 - teardown is best-effort
+                self._log(f"lobby unsubscribe failed: {err}")
             self._lobby = None
-
-        if self._client:
-            self._client.disconnect()
-            self._client = None
 
         self._rooms.clear()
         self._online_peers.clear()
         self._actor_to_peer_id.clear()
         self._local_peer = None
+        self._connected = False
+
+        if not self._is_ready:
+            self._ready_error = RuntimeError("NoLagSignal detached before ready")
+            self._ready_event.set()
+        self.emit("detached")
         self._connected = False
 
     async def join_room(self, name: str) -> SignalRoom:
@@ -239,21 +342,33 @@ class NoLagSignal(EventEmitter):
     # -- Private: lifecycle event handlers --
 
     def _on_connect(self, *args: Any) -> None:
+        if self._detached:
+            return
         self._log("Connected")
+        # With an injected client the wrapper does not drive the connection, so
+        # this is where setup starts (including after a reconnect).
+        if not self._is_ready:
+            self._schedule_setup()
 
     def _on_disconnect(self, *args: Any) -> None:
+        if self._detached:
+            return
         self._connected = False
         reason = args[0] if args else "unknown"
         self._log(f"Disconnected: {reason}")
         self.emit("disconnected", str(reason))
 
     def _on_reconnect(self, *args: Any) -> None:
+        if self._detached:
+            return
         self._connected = True
         self._log("Reconnected")
         self.emit("reconnected")
         asyncio.ensure_future(self._restore_rooms())
 
     def _on_error(self, *args: Any) -> None:
+        if self._detached:
+            return
         error = args[0] if args else Exception("Unknown error")
         if not isinstance(error, Exception):
             error = Exception(str(error))

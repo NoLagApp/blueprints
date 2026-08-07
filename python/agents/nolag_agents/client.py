@@ -1,9 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any
-
-from nolag import NoLag as NoLagClient
 
 from .event_emitter import EventEmitter
 from .agent_room import AgentRoom
@@ -19,26 +18,65 @@ class NoLagAgents(EventEmitter):
     Inbox, Tools, Approval, and Observe.
     """
 
-    def __init__(self, token: str, options: NoLagAgentsOptions | None = None) -> None:
+    def __init__(self, client: Any, options: NoLagAgentsOptions | None = None) -> None:
+        """Attach to an injected NoLag client.
+
+        The application owns the connection: it creates the client, connects it,
+        and disconnects it. This wrapper only attaches, so one connection can be
+        shared by several wrappers.
+
+            client = NoLag(token)
+            await client.connect()
+            agents = NoLagAgents(client, NoLagAgentsOptions(rooms=["workflow"]))
+            await agents.ready()
+            ...
+            await agents.detach()   # leaves the connection open
+        """
         super().__init__()
+        if client is None:
+            raise TypeError(
+                "NoLagAgents requires an injected NoLag client: "
+                "NoLagAgents(client, options). Create and connect the client yourself."
+            )
         opts = options or NoLagAgentsOptions()
-        self._token = token
+        self._client: Any = client
         self._app_name = opts.app_name or DEFAULT_APP_NAME
         self._agent_id = opts.agent_id or generate_id()
         self._debug = opts.debug
         self._room_names = opts.rooms or [DEFAULT_ROOM]
         self._lobby = opts.lobby
         self._presence = opts.presence
-        self._client_options = opts.client_options or {}
         self._load_balance = opts.load_balance
         self._load_balance_group = opts.load_balance_group
         self._load_balance_topics = opts.load_balance_topics
 
-        self._client: Any = None
-        self._app_context: Any = None
+        self._app_context: Any = self._client.set_app(self._app_name)
         self._rooms: dict[str, AgentRoom] = {}
         self._connected = False
         self._log = create_logger("NoLagAgents", self._debug)
+
+        self._detached = False
+        self._epoch = 0
+        self._is_ready = False
+        self._ready_event = asyncio.Event()
+        self._ready_error: BaseException | None = None
+        self._setup_task: asyncio.Task | None = None
+        self._lobby_handlers: list[tuple[str, Any]] = []
+
+        # Construction = attach. Handlers are stored so detach() can remove
+        # exactly ours and leave any sibling wrapper on this client untouched.
+        self._on_connect_ref = self._on_connected
+        self._on_disconnect_ref = self._on_disconnected
+        self._on_reconnect_ref = self._on_reconnected
+        self._on_error_ref = self._on_error
+        self._client.on("connect", self._on_connect_ref)
+        self._client.on("disconnect", self._on_disconnect_ref)
+        self._client.on("reconnect", self._on_reconnect_ref)
+        self._client.on("error", self._on_error_ref)
+
+        # Attach-to-connected: the client may already be up.
+        if getattr(self._client, "connected", False):
+            self._schedule_setup()
 
     @property
     def agent_id(self) -> str:
@@ -46,31 +84,94 @@ class NoLagAgents(EventEmitter):
 
     @property
     def connected(self) -> bool:
-        return self._connected
+        """Whether the injected client is connected and this wrapper is attached."""
+        if self._detached:
+            return False
+        return bool(getattr(self._client, "connected", self._connected))
+
+    @property
+    def detached(self) -> bool:
+        return self._detached
+
+    @property
+    def client(self) -> Any:
+        """The injected client, owned by the application, not this wrapper."""
+        return self._client
 
     @property
     def rooms(self) -> dict[str, AgentRoom]:
         return dict(self._rooms)
 
-    async def connect(self) -> None:
-        self._log("connecting...")
+    async def ready(self) -> None:
+        """Wait until wrapper setup completes.
 
-        self._client = NoLagClient(self._token, **self._client_options)
+        Resolves once the configured rooms are joined and the lobby, if any, is
+        subscribed. Raises RuntimeError if detach() happened first. Safe to await
+        more than once and after setup has already finished.
+        """
+        if self._detached and not self._is_ready:
+            raise RuntimeError("NoLagAgents detached before ready")
+        if (
+            not self._is_ready
+            and self._setup_task is None
+            and getattr(self._client, "connected", False)
+        ):
+            self._schedule_setup()
+        await self._ready_event.wait()
+        if self._ready_error is not None:
+            raise self._ready_error
 
-        self._app_context = self._client.set_app(self._app_name)
+    def _schedule_setup(self) -> None:
+        """Kick a setup pass. Event handlers are sync, so setup runs as a task."""
+        if self._detached:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # Constructed outside a running loop; ready() will start setup.
+            return
+        self._epoch += 1
+        self._setup_task = loop.create_task(self._run_setup(self._epoch))
 
-        self._client.on("connect", self._on_connected)
-        self._client.on("disconnect", self._on_disconnected)
-        self._client.on("reconnect", self._on_reconnected)
-        self._client.on("error", self._on_error)
+    def _stale(self, epoch: int) -> bool:
+        return self._detached or epoch != self._epoch
 
-        await self._client.connect()
+    async def _run_setup(self, epoch: int) -> None:
+        """Join configured rooms and subscribe the lobby.
 
-        for room_name in self._room_names:
-            await self.room(room_name)
+        Runs on every connect, so a reconnect re-establishes subscriptions. The
+        epoch guard stops a superseded pass from completing over a newer one.
+        """
+        try:
+            for room_name in self._room_names:
+                if self._stale(epoch):
+                    return
+                await self.room(room_name)
 
-        if self._lobby:
-            await self.subscribe_lobby(self._lobby)
+            if self._lobby:
+                if self._stale(epoch):
+                    return
+                await self.subscribe_lobby(self._lobby)
+        except Exception as err:  # noqa: BLE001 - surfaced to the caller
+            if self._stale(epoch):
+                return
+            self._log(f"setup failed: {err}")
+            if not self._is_ready:
+                self._ready_error = err
+                self._ready_event.set()
+            self._emit("error", err)
+            return
+
+        if self._stale(epoch):
+            return
+
+        was_ready = self._is_ready
+        self._is_ready = True
+        if not was_ready:
+            self._ready_event.set()
+            self._emit("connected")
+        else:
+            self._emit("reconnected")
 
     async def subscribe_lobby(self, lobby_slug: str) -> dict[str, Any]:
         if not self._app_context:
@@ -137,9 +238,13 @@ class NoLagAgents(EventEmitter):
                     )
                     rm.emit_presence("presence_update", actor_id, pdata)
 
-        self._client.on("lobbyPresence:join", _on_lobby_join)
-        self._client.on("lobbyPresence:leave", _on_lobby_leave)
-        self._client.on("lobbyPresence:update", _on_lobby_update)
+        for event, handler in (
+            ("lobbyPresence:join", _on_lobby_join),
+            ("lobbyPresence:leave", _on_lobby_leave),
+            ("lobbyPresence:update", _on_lobby_update),
+        ):
+            self._client.on(event, handler)
+            self._lobby_handlers.append((event, handler))
 
         try:
             initial_state = await lobby.subscribe()
@@ -149,14 +254,41 @@ class NoLagAgents(EventEmitter):
             self._log(f"lobby subscription failed: {err}")
             return {}
 
-    def disconnect(self) -> None:
-        self._log("disconnecting...")
-        if self._client:
-            self._client.disconnect()
+    async def detach(self) -> None:
+        """Release the wrapper. Terminal and idempotent.
+
+        Removes this wrapper's handlers, tears down its rooms, and never
+        disconnects the injected client, so any sibling wrapper sharing that
+        connection keeps working.
+        """
+        if self._detached:
+            return
+        self._detached = True
+        self._epoch += 1  # invalidate any setup still in flight
+        self._log("detaching...")
+
+        # Remove exactly our handlers; the core SDK supports per-handler removal.
+        self._client.off("connect", self._on_connect_ref)
+        self._client.off("disconnect", self._on_disconnect_ref)
+        self._client.off("reconnect", self._on_reconnect_ref)
+        self._client.off("error", self._on_error_ref)
+        for event, handler in self._lobby_handlers:
+            self._client.off(event, handler)
+        self._lobby_handlers.clear()
+
+        connected = bool(getattr(self._client, "connected", False))
+        for room in list(self._rooms.values()):
+            try:
+                await room.teardown(connected)
+            except Exception as err:  # noqa: BLE001 - teardown is best-effort
+                self._log(f"room teardown failed: {err}")
         self._rooms.clear()
-        self._client = None
-        self._app_context = None
+
         self._connected = False
+        if not self._is_ready:
+            self._ready_error = RuntimeError("NoLagAgents detached before ready")
+            self._ready_event.set()
+        self._emit("detached")
 
     async def room(self, name: str) -> AgentRoom:
         agent_room = self._rooms.get(name)
@@ -186,22 +318,30 @@ class NoLagAgents(EventEmitter):
     # ── Internal event handlers ──
 
     def _on_connected(self, *_args: Any) -> None:
+        if self._detached:
+            return
         self._connected = True
         self._log("connected")
-        self._emit("connected")
+        self._schedule_setup()
 
     def _on_disconnected(self, *args: Any) -> None:
+        if self._detached:
+            return
         self._connected = False
         reason = args[0] if args else "unknown"
         self._log("disconnected:", reason)
         self._emit("disconnected", reason)
 
     def _on_reconnected(self, *_args: Any) -> None:
+        if self._detached:
+            return
         self._connected = True
         self._log("reconnected")
-        self._emit("reconnected")
+        self._schedule_setup()
 
     def _on_error(self, *args: Any) -> None:
+        if self._detached:
+            return
         err = args[0] if args else Exception("unknown error")
         self._log("error:", err)
         self._emit("error", err)

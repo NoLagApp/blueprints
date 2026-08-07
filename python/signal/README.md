@@ -1,5 +1,23 @@
 # NoLag Signal SDK (Python)
 
+## Injected client
+
+This SDK takes an **injected** NoLag client. Your application creates, connects,
+and disconnects the client; the wrapper only attaches to it. One connection can
+therefore be shared by several wrappers, and releasing one never disturbs the
+others.
+
+| Step | Call | Notes |
+|---|---|---|
+| Attach | `NoLagSignal(client, options)` | Registers handlers immediately, before the client connects |
+| Wait | `await x.ready()` | Resolves once wrapper setup completes; re-runs on reconnect |
+| Release | `await x.detach()` | Terminal, idempotent, **never disconnects the client** |
+
+`detach()` removes exactly this wrapper's handlers, so a sibling wrapper on the
+same client keeps working. Connection settings (url, reconnect, heartbeat) live
+on the client you construct, not in this SDK's options.
+
+
 WebRTC signaling SDK for Python, built on the [NoLag](https://nolag.app) real-time platform.
 
 Provides peer discovery, SDP offer/answer exchange, and ICE candidate relay for building multi-peer WebRTC applications.
@@ -14,15 +32,21 @@ pip install nolag-signal
 
 ```python
 import asyncio
+from nolag import NoLag
 from nolag_signal import NoLagSignal, NoLagSignalOptions
 
 async def main():
-    signal = NoLagSignal("YOUR_ACTOR_TOKEN", NoLagSignalOptions(
+    # The application owns the connection.
+    client = NoLag("YOUR_ACTOR_TOKEN")
+    await client.connect()
+
+    # The wrapper attaches to it.
+    signal = NoLagSignal(client, NoLagSignalOptions(
         app_name="signal",
         metadata={"name": "Alice"},
     ))
 
-    await signal.connect()
+    await signal.ready()
     room = await signal.join_room("call-room")
 
     # Listen for incoming signals

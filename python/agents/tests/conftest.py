@@ -19,6 +19,7 @@ class MockRoomContext:
         self._subscribed: list[tuple[str, Any]] = []
         self._published: list[tuple[str, Any, Any]] = []
         self._presence: dict[str, Any] | None = None
+        self.unsubscribed: list[str] = []
 
     async def subscribe(self, topic: str, options: Any = None) -> None:
         self._subscribed.append((topic, options))
@@ -36,6 +37,18 @@ class MockRoomContext:
     def on(self, topic: str, handler: Callable[..., Any]) -> None:
         self._listeners[topic].append(handler)
 
+    def off(self, topic: str, handler: Callable[..., Any] | None = None) -> None:
+        if handler is None:
+            self._listeners[topic] = []
+        else:
+            self._listeners[topic] = [h for h in self._listeners[topic] if h != handler]
+
+    def handler_count(self, topic: str) -> int:
+        return len(self._listeners.get(topic, []))
+
+    async def unsubscribe(self, topic: str) -> None:
+        self.unsubscribed.append(topic)
+
     async def emit(self, topic: str, data: Any, options: Any = None) -> None:
         self._published.append((topic, data, options))
 
@@ -51,17 +64,75 @@ class MockRoomContext:
             handler(data)
 
 
-class MockClient:
-    """Mock of a nolag client for testing."""
+class MockAppContext:
+    """Mock of a nolag app context (what client.set_app returns)."""
 
-    def __init__(self) -> None:
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.rooms: dict[str, MockRoomContext] = {}
+        self.lobbies: list[str] = []
+
+    def set_room(self, name: str) -> "MockRoomContext":
+        ctx = self.rooms.get(name)
+        if ctx is None:
+            ctx = MockRoomContext()
+            self.rooms[name] = ctx
+        return ctx
+
+    def set_lobby(self, slug: str) -> Any:
+        self.lobbies.append(slug)
+
+        class _Lobby:
+            async def subscribe(self_inner) -> dict[str, Any]:
+                return {}
+
+        return _Lobby()
+
+
+class MockClient:
+    """Mock of a nolag client for testing.
+
+    Supports per-handler removal, matching the real SDK, so tests can assert that
+    detach() takes back exactly its own handlers.
+    """
+
+    def __init__(self, connected: bool = True) -> None:
         self._listeners: dict[str, list[Callable[..., Any]]] = defaultdict(list)
+        self._connected = connected
+        self.app_contexts: list[MockAppContext] = []
+        self.disconnect_calls = 0
+
+    @property
+    def connected(self) -> bool:
+        return self._connected
+
+    def set_connected(self, value: bool) -> None:
+        self._connected = value
+
+    def set_app(self, name: str) -> MockAppContext:
+        ctx = MockAppContext(name)
+        self.app_contexts.append(ctx)
+        return ctx
+
+    def disconnect(self) -> None:
+        # A wrapper must never call this. Counted so tests can assert it stays 0.
+        self.disconnect_calls += 1
+        self._connected = False
 
     def on(self, event: str, handler: Callable[..., Any]) -> None:
         self._listeners[event].append(handler)
 
+    def off(self, event: str, handler: Callable[..., Any] | None = None) -> None:
+        if handler is None:
+            self._listeners[event] = []
+        else:
+            self._listeners[event] = [h for h in self._listeners[event] if h != handler]
+
+    def handler_count(self, event: str) -> int:
+        return len(self._listeners.get(event, []))
+
     def simulate_event(self, event: str, *args: Any) -> None:
-        for handler in self._listeners.get(event, []):
+        for handler in list(self._listeners.get(event, [])):
             handler(*args)
 
 

@@ -4,13 +4,13 @@ from nolag_agents.types import ConnectedAgent
 
 
 class TestHandoff:
-    def test_dispatch_raises_without_capable_agents(self, agent_room):
+    @pytest.mark.asyncio
+    async def test_dispatch_raises_without_capable_agents(self, agent_room):
+        # Python 3.12 no longer creates an implicit loop, so this runs as a real
+        # async test rather than driving get_event_loop() by hand.
         handoff = Handoff(agent_room)
         with pytest.raises(RuntimeError, match='No agent with capability "summarize"'):
-            import asyncio
-            asyncio.get_event_loop().run_until_complete(
-                handoff.dispatch("summarize", {"text": "hi"})
-            )
+            await handoff.dispatch("summarize", {"text": "hi"})
 
     @pytest.mark.asyncio
     async def test_dispatch_with_allow_no_workers(self, agent_room, mock_room_context):

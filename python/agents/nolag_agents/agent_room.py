@@ -48,8 +48,55 @@ class AgentRoom(EventEmitter):
         self._load_balance_group = load_balance_group
         self._load_balance_topics = set(load_balance_topics or [TOPIC_TASKS, TOPIC_TOOLS])
 
+        # Stored so teardown() removes exactly this room's handlers and leaves
+        # any sibling wrapper sharing the client untouched.
+        self._topic_handlers: list[tuple[str, Callable[..., Any]]] = []
+        self._presence_handlers: list[tuple[str, Callable[..., Any]]] = []
+        self._torn_down = False
+
         self._wire_topic_listeners()
         self._wire_presence_listeners()
+
+    async def teardown(self, connected: bool = True) -> None:
+        """Release this room's handlers and subscriptions. Idempotent.
+
+        Server-side unsubscribes are attempted only while the socket is up; the
+        connection itself is never closed.
+        """
+        if self._torn_down:
+            return
+        self._torn_down = True
+
+        for topic, handler in self._topic_handlers:
+            off = getattr(self._room_context, "off", None)
+            if callable(off):
+                off(topic, handler)
+        self._topic_handlers.clear()
+
+        for event, handler in self._presence_handlers:
+            off = getattr(self._client, "off", None)
+            if callable(off):
+                off(event, handler)
+        self._presence_handlers.clear()
+
+        if connected:
+            unsubscribe = getattr(self._room_context, "unsubscribe", None)
+            if callable(unsubscribe):
+                for topic in (
+                    TOPIC_TASKS,
+                    TOPIC_RESULTS,
+                    TOPIC_STATE,
+                    TOPIC_EVENTS,
+                    TOPIC_INBOX,
+                    TOPIC_TOOLS,
+                    TOPIC_APPROVAL,
+                ):
+                    try:
+                        await unsubscribe(topic)
+                    except Exception as err:  # noqa: BLE001 - best-effort cleanup
+                        self._log(f"unsubscribe {topic} failed: {err}")
+
+        self._agents.clear()
 
     async def initialize(self) -> None:
         """Async initialization — subscribe to topics and set presence.
@@ -317,9 +364,13 @@ class AgentRoom(EventEmitter):
             )
             self._emit("presence_update", actor_id, pdata)
 
-        self._client.on("presence:join", _on_join)
-        self._client.on("presence:leave", _on_leave)
-        self._client.on("presence:update", _on_update)
+        for event, handler in (
+            ("presence:join", _on_join),
+            ("presence:leave", _on_leave),
+            ("presence:update", _on_update),
+        ):
+            self._client.on(event, handler)
+            self._presence_handlers.append((event, handler))
 
     def _wire_topic_listeners(self) -> None:
         # Topic subscriptions are done in initialize() (async)
@@ -331,7 +382,9 @@ class AgentRoom(EventEmitter):
             (TOPIC_INBOX, "inbox"),
         ]
         for topic, event_name in simple_map:
-            self._room_context.on(topic, self._make_handler(topic, event_name))
+            handler = self._make_handler(topic, event_name)
+            self._room_context.on(topic, handler)
+            self._topic_handlers.append((topic, handler))
 
         def _on_results(data: Any, *_args: Any) -> None:
             # Multiplexed: results topic carries task results AND tool
@@ -361,9 +414,13 @@ class AgentRoom(EventEmitter):
             else:
                 self._emit("tool_request", data)
 
-        self._room_context.on(TOPIC_RESULTS, _on_results)
-        self._room_context.on(TOPIC_APPROVAL, _on_approval)
-        self._room_context.on(TOPIC_TOOLS, _on_tools)
+        for topic, handler in (
+            (TOPIC_RESULTS, _on_results),
+            (TOPIC_APPROVAL, _on_approval),
+            (TOPIC_TOOLS, _on_tools),
+        ):
+            self._room_context.on(topic, handler)
+            self._topic_handlers.append((topic, handler))
 
     def _make_handler(self, topic: str, event_name: str) -> Callable[..., None]:
         def handler(data: Any, *_args: Any) -> None:
