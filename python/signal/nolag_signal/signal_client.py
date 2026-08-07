@@ -10,48 +10,10 @@ from .event_emitter import EventEmitter
 from .signal_room import SignalRoom
 from .types import NoLagSignalOptions, Peer
 
-try:
-    from nolag import NoLag, NoLagOptions
-
-    # Patch nolag client to copy handler sets before iterating,
-    # preventing "Set changed size during iteration" errors.
-    # The nolag client uses `set()` for handler storage and iterates
-    # without copying in _emit_event, _handle_message (topic + any handlers).
-
-    class _SafeSet(set):
-        """A set that yields a snapshot when iterated, safe against concurrent mutation."""
-
-        def __iter__(self):
-            return iter(list(set.__iter__(self)))
-
-    def _patched_on(self: Any, event: str, handler: Callable) -> Any:
-        if (event in ("connect", "disconnect", "reconnect", "error",
-                      "presence:join", "presence:leave", "presence:update")
-                or event.startswith("lobby:") or event.startswith("lobbyPresence:")
-                or event.startswith("lobbySubscribed:") or event.startswith("lobbyPresenceList:")):
-            if event not in self._event_handlers:
-                self._event_handlers[event] = _SafeSet()
-            self._event_handlers[event].add(handler)
-        else:
-            if event not in self._message_handlers:
-                self._message_handlers[event] = _SafeSet()
-            self._message_handlers[event].add(handler)
-        return self
-
-    NoLag.on = _patched_on  # type: ignore[assignment]
-
-    # Also patch __init__ to use _SafeSet for _any_handlers
-    _original_init = NoLag.__init__
-
-    def _patched_init(self: Any, *args: Any, **kwargs: Any) -> None:
-        _original_init(self, *args, **kwargs)
-        self._any_handlers = _SafeSet(self._any_handlers)
-
-    NoLag.__init__ = _patched_init  # type: ignore[assignment]
-
-except ImportError:
-    NoLag = None  # type: ignore[assignment,misc]
-    NoLagOptions = None  # type: ignore[assignment,misc]
+# nolag>=2.5.1 snapshots its handler sets before dispatch, so a handler is free
+# to call on()/off() or detach a wrapper while it runs. Earlier versions raised
+# "Set changed size during iteration"; this package used to monkey-patch the
+# client globally to work around it.
 
 
 def _create_logger(prefix: str, enabled: bool) -> Callable[..., None]:

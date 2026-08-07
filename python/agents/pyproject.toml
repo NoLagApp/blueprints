@@ -9,7 +9,7 @@ description = "Multi-agent coordination SDK for NoLag - handoff, blackboard, inb
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.10"
-dependencies = ["nolag>=2.5.0"]
+dependencies = ["nolag>=2.5.1"]
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0.0", "pytest-asyncio>=0.21.0"]
