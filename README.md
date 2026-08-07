@@ -152,7 +152,6 @@ blueprints/
 ├── tools/
 │   └── sync-blueprints/          # CLI to sync example-app <-> blueprint.json
 │
-├── go/                           # Go SDKs (planned)
 ├── python/                       # Python SDKs (planned)
 ├── package.json                  # Workspace root
 └── tsconfig.base.json
