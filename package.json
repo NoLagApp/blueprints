@@ -8,7 +8,8 @@
   ],
   "scripts": {
     "build": "npm run build --workspaces",
-    "test": "npm run test --workspaces",
+    "test": "npm run test:packaging && npm run test --workspaces",
+    "test:packaging": "vitest run --config vitest.config.ts",
     "typecheck": "npm run typecheck --workspaces",
     "clean": "rm -rf js/*/dist",
     "sync-blueprints": "node tools/sync-blueprints/cli.js"

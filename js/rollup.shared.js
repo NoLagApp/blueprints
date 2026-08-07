@@ -4,8 +4,8 @@ import commonjs from "@rollup/plugin-commonjs";
 import terser from "@rollup/plugin-terser";
 
 /**
- * Creates the standard 3-build rollup config (ESM, CJS, browser+terser).
- * All blueprint SDKs use this identical build setup.
+ * Creates the standard 4-build rollup config (ESM, CJS, browser+terser,
+ * react-native). All blueprint SDKs use this identical build setup.
  */
 export function createRollupConfig({ external = ["@nolag/js-sdk"] } = {}) {
   return [
@@ -29,6 +29,14 @@ export function createRollupConfig({ external = ["@nolag/js-sdk"] } = {}) {
       output: { file: "dist/browser.js", format: "esm", sourcemap: true },
       external,
       plugins: [typescript({ tsconfig: "./tsconfig.json" }), resolve({ browser: true }), commonjs(), terser()],
+    },
+    // React Native build (not minified: Metro minifies release bundles itself,
+    // and shipping unminified keeps stack traces and the debugger useful)
+    {
+      input: "src/react-native.ts",
+      output: { file: "dist/react-native.js", format: "esm", sourcemap: true },
+      external,
+      plugins: [typescript({ tsconfig: "./tsconfig.json" }), resolve({ browser: true }), commonjs()],
     },
   ];
 }
