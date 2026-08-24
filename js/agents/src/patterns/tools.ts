@@ -27,11 +27,19 @@ export class Tools {
 
     // Wire response correlation
     this._room.on("toolResponse", (envelope) => {
+      if (!envelope || typeof envelope.correlationId !== "string") return;
       this._correlations.resolve(envelope.correlationId, envelope);
     });
 
     // Wire request handling
     this._room.on("toolRequest", async (envelope) => {
+      // The tools topic is an open room surface: anything published there
+      // that is not a tool_response is classified as a request, including
+      // foreign or malformed payloads. A request with no toolName cannot be
+      // routed OR NACKed meaningfully — and it must never be able to crash
+      // the host (this listener is async, so an uncaught throw here becomes
+      // an unhandled rejection that terminates the process).
+      if (!envelope || typeof envelope.toolName !== "string") return;
       const handler = this._handlers.get(envelope.toolName);
 
       // Direct the response back to the requester's filter sub-topic
@@ -112,6 +120,8 @@ export class Tools {
   /** True when this agent hosts handlers in the tool's namespace (prefix
    *  before the first '.'); unprefixed tools match any unprefixed handler. */
   private _ownsNamespace(toolName: string): boolean {
+    // Belt and braces: a nameless tool belongs to nobody.
+    if (typeof toolName !== "string") return false;
     if (this._handlers.size === 0) return false;
     const ns = toolName.includes(".") ? toolName.slice(0, toolName.indexOf(".")) : null;
     for (const name of this._handlers.keys()) {

@@ -61,4 +61,28 @@ describe("EventEmitter", () => {
     expect(emitter.listenerCount("message")).toBe(0);
     expect(emitter.listenerCount("count")).toBe(0);
   });
+
+  it("contains a rejected async handler instead of letting it kill the process", async () => {
+    // An async handler's failure is a rejected promise, not a throw — left
+    // unattached it becomes an unhandled rejection, which terminates Node.
+    // The emitter is fed by network input, so it must contain both kinds.
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const emitter = new TestEmitter();
+    const after = vi.fn();
+    emitter.on("message", async () => {
+      throw new Error("boom-async");
+    });
+    emitter.on("message", after);
+
+    emitter.doEmit("message", "hello");
+    await new Promise((r) => setTimeout(r, 0));
+
+    // The rejection was logged, and later handlers still ran.
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("async message handler"),
+      expect.any(Error),
+    );
+    expect(after).toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
 });

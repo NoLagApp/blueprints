@@ -48,7 +48,21 @@ export class EventEmitter<
     if (!handlers) return;
     for (const handler of handlers) {
       try {
-        handler(...args);
+        // Async handlers don't throw — they return rejected promises, which
+        // the catch below never sees. Left unattached, one bad envelope from
+        // the wire becomes an unhandled rejection and (Node ≥15) TERMINATES
+        // THE HOST PROCESS. An event emitter fed by network input must never
+        // hand a remote peer that power, so rejections are contained here
+        // exactly like sync throws.
+        const result = handler(...args) as unknown;
+        if (
+          result &&
+          typeof (result as PromiseLike<unknown>).then === "function"
+        ) {
+          (result as PromiseLike<unknown>).then(undefined, (e: unknown) => {
+            console.error(`Error in async ${String(event)} handler:`, e);
+          });
+        }
       } catch (e) {
         console.error(`Error in ${String(event)} handler:`, e);
       }

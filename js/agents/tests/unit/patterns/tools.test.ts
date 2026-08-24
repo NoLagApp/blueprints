@@ -438,4 +438,41 @@ describe("NO_HANDLER NACK and protocol gating (v0.3.0)", () => {
       expect(msg).toContain("Likely causes");
     }
   });
+
+  // --- malformed wire input ---
+  //
+  // The tools topic is an open room surface: AgentRoom classifies anything
+  // that is not a tool_response as a toolRequest, so foreign or malformed
+  // payloads land in these listeners. A remote peer must never be able to
+  // crash a tool server with a bad message — this class of failure took a
+  // whole host process down in the field (undefined.includes inside
+  // _ownsNamespace, escaping as an unhandled rejection).
+
+  it("ignores a tool request with no toolName instead of crashing", async () => {
+    const room = createMockAgentRoom();
+    const tools = new Tools(room, "agent-1");
+    tools.register("search", async () => ({ results: [] }));
+
+    room.simulate("toolRequest", {
+      type: "tool_request",
+      requestId: "r-bad",
+      requestedBy: "someone",
+    } as never);
+    room.simulate("toolRequest", null as never);
+    room.simulate("toolRequest", { toolName: 42 } as never);
+
+    await new Promise((r) => setTimeout(r, 10));
+    // Nothing published: no NACK is possible for a request that cannot be
+    // named, and nothing threw (a rejection here would fail the test run).
+    expect(room.getPublished()).toHaveLength(0);
+  });
+
+  it("ignores a malformed tool response instead of crashing", () => {
+    const room = createMockAgentRoom();
+    new Tools(room, "agent-1");
+    room.simulate("toolResponse", null as never);
+    room.simulate("toolResponse", { type: "tool_response" } as never);
+    // Reaching here without a throw is the assertion.
+    expect(room.getPublished()).toHaveLength(0);
+  });
 });
