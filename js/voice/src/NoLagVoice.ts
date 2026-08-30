@@ -22,6 +22,7 @@
  */
 
 import { Observe, Inbox, type NoLagAgents } from "@nolag/agents";
+import { OrchestratorBridge, type OrchestratorBridgeOptions } from "./orchestrator.js";
 import { callAgentId, callRoomSlug } from "./rooms.js";
 import type {
   CallControlHandlers,
@@ -88,6 +89,18 @@ export class NoLagVoice {
   /** The injected wrapper, for callers that want the rest of its surface. */
   get agentsInstance(): NoLagAgents {
     return this.agents;
+  }
+
+  /**
+   * The call's link to something that can actually do the work.
+   *
+   * One per process, not one per call: the orchestrator room is static and
+   * shared, so this is opened at startup and every call dispatches through it.
+   * Call `ready()` on the result before taking calls, so capabilities are known
+   * before a caller is waiting on them.
+   */
+  orchestrator(options: Omit<OrchestratorBridgeOptions, "agents"> = {}): OrchestratorBridge {
+    return new OrchestratorBridge({ ...options, agents: this.agents });
   }
 
   /**

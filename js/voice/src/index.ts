@@ -16,6 +16,28 @@ export type {
   CallWatcher,
 } from "./NoLagVoice.js";
 
+export {
+  OrchestratorBridge,
+  orchestratorPoolOptions,
+  ORCHESTRATOR_ROOM,
+  ORCHESTRATOR_CAPABILITY,
+  ORCHESTRATOR_POOL,
+} from "./orchestrator.js";
+export type {
+  OrchestratorBridgeOptions,
+  OrchestratorRequest,
+  OrchestratorAnswer,
+  PendingAsk,
+} from "./orchestrator.js";
+
+export { orchestratedModel } from "./orchestrated-model.js";
+export type {
+  OrchestratedModelOptions,
+  OrchestratedLines,
+  OrchestratorAskEvent,
+  VoiceFloor,
+} from "./orchestrated-model.js";
+
 export { createRoomProvisioner, callRoomSlug, callAgentId } from "./rooms.js";
 export type { RoomProvisioner, RoomProvisionerOptions } from "./rooms.js";
 
