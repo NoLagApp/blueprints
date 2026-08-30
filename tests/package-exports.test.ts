@@ -48,8 +48,8 @@ const BROWSER_CONDITIONS = ["browser", "import"];
 const NODE_ESM_CONDITIONS = ["node", "import"];
 const NODE_CJS_CONDITIONS = ["node", "require"];
 
-it("finds all 12 blueprint SDK packages", () => {
-  expect(packages.length).toBe(12);
+it("finds all 13 blueprint SDK packages", () => {
+  expect(packages.length).toBe(13);
 });
 
 describe.each(packages.map((p) => [p.pkg.name, p] as const))(
@@ -116,7 +116,7 @@ describe.each(
   packages
     .filter((p) => existsSync(join(p.dir, "dist/react-native.js")))
     .map((p) => [p.pkg.name, p] as const)
-)("%s react-native build", (_name, { dir }) => {
+)("%s react-native build", (_name, { dir, pkg }) => {
   const source = readFileSync(join(dir, "dist/react-native.js"), "utf8");
 
   it("does not inline ws, wrtc or any Node core module", () => {
@@ -130,7 +130,22 @@ describe.each(
     }
   });
 
-  it("leaves @nolag/js-sdk external so Metro resolves it by condition", () => {
-    expect(source).toMatch(/from ["']@nolag\/js-sdk["']/);
+  it("leaves its NoLag dependencies external so Metro resolves them by condition", () => {
+    // Inlining a NoLag package defeats conditional resolution: the copy baked
+    // into this bundle is whichever build rollup happened to read, so Metro
+    // never gets to pick the react-native one. Most wrappers import the core
+    // directly; @nolag/voice sits on @nolag/agents instead, so the invariant is
+    // stated over whatever the package actually depends on.
+    const peers: string[] = Object.keys(pkg.peerDependencies ?? {}).filter((name: string) =>
+      name.startsWith("@nolag/")
+    );
+    const imported = peers.filter((name) =>
+      new RegExp(`from ["']${name.replace("/", "\\/")}["']`).test(source)
+    );
+
+    expect(imported.length, "no NoLag dependency left external").toBeGreaterThan(0);
+    for (const peer of peers) {
+      if (source.includes(peer)) expect(imported).toContain(peer);
+    }
   });
 });

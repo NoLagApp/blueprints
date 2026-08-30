@@ -1,0 +1,65 @@
+{
+  "name": "@nolag/voice",
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "description": "Live phone calls as realtime rooms: stream the transcript, steer the agent mid-conversation, and let it reach an orchestrator for knowledge and tool calls. Pairs with @nolag/voice-engine for the call itself.",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.mjs",
+  "browser": "./dist/browser.js",
+  "react-native": "./dist/react-native.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "react-native": {
+        "types": "./dist/react-native.d.ts",
+        "default": "./dist/react-native.js"
+      },
+      "browser": {
+        "types": "./dist/browser.d.ts",
+        "default": "./dist/browser.js"
+      },
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.mjs"
+      },
+      "require": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.cjs"
+      },
+      "default": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "rollup -c",
+    "dev": "rollup -c -w",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NoLagApp/blueprints.git",
+    "directory": "js/voice"
+  },
+  "author": "NoLag",
+  "license": "MIT",
+  "homepage": "https://nolag.app",
+  "devDependencies": {
+    "@nolag/agents": "^1.0.0",
+    "@nolag/js-sdk": "^1.12.0"
+  },
+  "peerDependencies": {
+    "@nolag/agents": "^1.0.0",
+    "@nolag/js-sdk": "^1.12.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

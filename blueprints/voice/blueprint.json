@@ -1,0 +1,71 @@
+{
+  "blueprintId": "nolag-voice-sdk",
+  "name": "NoLag Voice SDK",
+  "description": "Live phone calls as coordination rooms — stream a call's transcript as it happens and steer the agent mid-conversation",
+  "version": "1.0.0",
+  "category": "ai-agents",
+  "tags": ["voice", "telephony", "agents", "llm", "realtime"],
+  "difficulty": "intermediate",
+  "framework": "vanilla",
+  "dependencies": {
+    "@nolag/voice": "^0.1.0",
+    "@nolag/voice-engine": "^0.1.0",
+    "@nolag/agents": "^1.0.0",
+    "@nolag/js-sdk": "^1.12.0"
+  },
+  "topics": ["tasks", "results", "state", "events", "inbox", "tools", "approval"],
+  "topicConfigs": {
+    "events": {
+      "logging": {
+        "enabled": true,
+        "retention": "30d",
+        "replayEnabled": true,
+        "maxReplayMessages": 500
+      }
+    },
+    "inbox": {
+      "logging": {
+        "enabled": true,
+        "retention": "7d",
+        "replayEnabled": true,
+        "maxReplayMessages": 100
+      }
+    },
+    "state": {
+      "logging": {
+        "enabled": true,
+        "retention": "90d",
+        "replayEnabled": true,
+        "maxReplayMessages": 50
+      }
+    },
+    "approval": {
+      "logging": {
+        "enabled": true,
+        "retention": "90d",
+        "replayEnabled": true,
+        "maxReplayMessages": 50
+      }
+    }
+  },
+  "config": {
+    "autoProvisionRooms": true,
+    "staticRooms": [
+      {
+        "slug": "call-supervision",
+        "name": "Call Supervision",
+        "description": "Lobby for dashboards watching calls, so supervisors can be present before any call starts",
+        "topics": ["events", "inbox", "state"]
+      }
+    ],
+    "staticLobbies": [],
+    "settings": {
+      "rateLimit": "600/min",
+      "maxPayloadSize": 8192
+    }
+  },
+  "notes": {
+    "autoProvisionRooms": "Required. Each call gets its own room named after the call id, created through the control plane the moment the call connects. The broker rejects rooms it has never been told about.",
+    "actors": "Use two actor tokens. The broker never delivers a message back to the actor that published it, so a dashboard sharing the call's token connects successfully and then shows nothing at all."
+  }
+}
