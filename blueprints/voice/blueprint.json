@@ -4,16 +4,30 @@
   "description": "Live phone calls as coordination rooms — stream a call's transcript as it happens and steer the agent mid-conversation",
   "version": "1.0.0",
   "category": "ai-agents",
-  "tags": ["voice", "telephony", "agents", "llm", "realtime"],
+  "tags": [
+    "voice",
+    "telephony",
+    "agents",
+    "llm",
+    "realtime"
+  ],
   "difficulty": "intermediate",
   "framework": "vanilla",
   "dependencies": {
-    "@nolag/voice": "^0.1.0",
-    "@nolag/voice-engine": "^0.1.0",
+    "@nolag/voice": "^0.2.0",
+    "@nolag/voice-engine": "^0.2.0",
     "@nolag/agents": "^1.0.0",
     "@nolag/js-sdk": "^1.12.0"
   },
-  "topics": ["tasks", "results", "state", "events", "inbox", "tools", "approval"],
+  "topics": [
+    "tasks",
+    "results",
+    "state",
+    "events",
+    "inbox",
+    "tools",
+    "approval"
+  ],
   "topicConfigs": {
     "events": {
       "logging": {
@@ -55,17 +69,37 @@
         "slug": "call-supervision",
         "name": "Call Supervision",
         "description": "Lobby for dashboards watching calls, so supervisors can be present before any call starts",
-        "topics": ["events", "inbox", "state"]
+        "topics": [
+          "events",
+          "inbox",
+          "state"
+        ]
+      },
+      {
+        "slug": "orchestrator-work",
+        "name": "Orchestrator Work",
+        "description": "Where calls dispatch work to orchestrators. Static and shared by every call, so orchestrators join once at startup rather than once per call, and their capabilities are known before a caller is waiting on them.",
+        "topics": [
+          "tasks",
+          "results",
+          "events",
+          "state",
+          "inbox",
+          "approval",
+          "tools"
+        ]
       }
     ],
     "staticLobbies": [],
     "settings": {
       "rateLimit": "600/min",
-      "maxPayloadSize": 8192
+      "maxPayloadSize": 32768
     }
   },
   "notes": {
     "autoProvisionRooms": "Required. Each call gets its own room named after the call id, created through the control plane the moment the call connects. The broker rejects rooms it has never been told about.",
-    "actors": "Use two actor tokens. The broker never delivers a message back to the actor that published it, so a dashboard sharing the call's token connects successfully and then shows nothing at all."
+    "actors": "Use two actor tokens. The broker never delivers a message back to the actor that published it, so a dashboard sharing the call's token connects successfully and then shows nothing at all.",
+    "orchestratorScaling": "Orchestrator replicas must share one load-balance group: NoLag(token, { loadBalance: true, loadBalanceGroup: \"orchestrator-pool\" }). The tasks topic broadcasts by default, and the group otherwise defaults to the actor token id, so without both settings every replica runs the same large-model inference and every answer races back to the same call. Voice servers must stay out of that group: they join this room to dispatch, the Agents SDK subscribes every joined room to tasks regardless, and a voice process inside the pool would be handed tasks it silently drops.",
+    "maxPayloadSize": "Raised from 8192 because an orchestrator answer carries spoken text plus supporting detail. An oversized publish fails rather than arriving truncated."
   }
 }

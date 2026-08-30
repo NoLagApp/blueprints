@@ -10,11 +10,12 @@
   "scripts": {
     "start": "node src/server.js",
     "monitor": "node src/monitor.js",
-    "call": "node src/call.js"
+    "call": "node src/call.js",
+    "orchestrator": "node src/orchestrator.js"
   },
   "dependencies": {
-    "@nolag/voice-engine": "^0.1.0",
-    "@nolag/voice": "^0.1.0",
+    "@nolag/voice-engine": "^0.2.0",
+    "@nolag/voice": "^0.2.0",
     "@nolag/agents": "^1.0.0",
     "@nolag/js-sdk": "^1.12.0",
     "dotenv": "^16.4.5",

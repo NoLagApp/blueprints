@@ -51,6 +51,18 @@
  * this room to dispatch, and the Agents SDK subscribes every joined room to
  * `tasks` whether or not anything handles them, so sharing the group would hand
  * some tasks to a process that silently drops them.
+ *
+ * ## The orchestrator needs its own actor token
+ *
+ * The broker never delivers a message back to the actor that published it. Two
+ * processes sharing one actor token are one actor, so every task the voice
+ * server publishes is invisible to the orchestrator, and every ask times out.
+ *
+ * Nothing about that looks broken. Both processes connect, both join, presence
+ * lists them both, and the capability is discovered exactly as it should be.
+ * The first thing that goes wrong is the answer never coming, which reads far
+ * more like a slow orchestrator than a misconfigured token. `ready()` checks
+ * for it rather than leaving you to find it on a live call.
  */
 
 import {
@@ -168,6 +180,8 @@ export class OrchestratorBridge {
   private readonly maxAnswerChars: number;
   private seeded: string[] = [];
   private detached = false;
+  private sharedActor = false;
+  private readonly client: { actorId: string | null } | null;
 
   private readonly onResult = (envelope: ResultEnvelope): void => {
     if (!envelope?.correlationId) return;
@@ -187,6 +201,7 @@ export class OrchestratorBridge {
     this.maxAnswerChars = options.maxAnswerChars ?? 600;
 
     this.room = options.agents.room(this.roomSlug);
+    this.client = (options.agents as { client?: { actorId: string | null } }).client ?? null;
     this.room.on("result", this.onResult);
   }
 
@@ -211,7 +226,48 @@ export class OrchestratorBridge {
   async ready(): Promise<string[]> {
     const present = await this.room.fetchPresence();
     this.seeded = [...new Set(present.flatMap((agent) => agent.capabilities ?? []))];
+    this.warnIfSharingAnActor(present);
     return this.capabilities();
+  }
+
+  /**
+   * Catches the configuration mistake that presents as a slow orchestrator.
+   *
+   * Everything visible looks right when the two sides share an actor token:
+   * both connect, both join, presence lists them, the capability is discovered.
+   * The only symptom is that no answer ever comes back, and that is a long way
+   * from the cause.
+   */
+  private warnIfSharingAnActor(present: Array<{ actorId?: string }>): void {
+    const mine = this.actorId;
+    if (!mine) return;
+    const others = present.filter((agent) => agent.actorId && agent.actorId !== mine);
+    if (others.length || !present.some((agent) => agent.actorId === mine)) return;
+
+    this.sharedActor = true;
+    console.warn(
+      `[nolag/voice] Everything in ${this.roomSlug} is authenticated as the same actor ` +
+        `as this process (${mine}). The broker never delivers a message back to the ` +
+        `actor that published it, so orchestrator tasks published here will not be ` +
+        `seen and every ask will time out. Give the orchestrator its own actor token.`
+    );
+  }
+
+  /**
+   * True when `ready()` found nothing in the room under a different actor
+   * token, which is the shape of the mistake above rather than proof of it.
+   */
+  get sharesAnActor(): boolean {
+    return this.sharedActor;
+  }
+
+  /** This connection's actor, which is what the broker routes on. */
+  private get actorId(): string | null {
+    try {
+      return this.client?.actorId ?? null;
+    } catch {
+      return null;
+    }
   }
 
   /**

@@ -33,7 +33,13 @@ import {
 // Recording touches the filesystem, so it is a separate entry point: an agent
 // running in a function should not carry it.
 import { createRecorder } from "@nolag/voice-engine/recorder";
-import { NoLagVoice, callRoomSlug, createRoomProvisioner } from "@nolag/voice";
+import {
+  NoLagVoice,
+  callRoomSlug,
+  createRoomProvisioner,
+  orchestratedModel,
+  ORCHESTRATOR_ROOM,
+} from "@nolag/voice";
 
 const port = Number(process.env.PORT ?? 3000);
 const rootDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -125,6 +131,79 @@ if (nolag.token && nolag.apiKey) {
   if (provisioner) console.log(`[nolag] coordination ready for app ${nolag.appSlug}`);
 } else {
   console.warn("[nolag] NOLAG_ACCESS_TOKEN or NOLAG_API_KEY missing, coordination disabled");
+}
+
+/**
+ * One long-lived connection to the orchestrator room, shared by every call.
+ *
+ * Opened at startup rather than per call for two reasons. The room is static,
+ * so it already existed when this connection authenticated, which is the rule
+ * that forces a per-call connection for per-call rooms. And presence needs a
+ * moment to settle: asking who is out there in the same tick as joining reports
+ * an empty room, and the first caller of the day would be told nobody can help.
+ *
+ * Deliberately NOT load balanced. This process joins the room to dispatch, and
+ * the Agents SDK subscribes every joined room to `tasks` whether or not
+ * anything handles them, so putting a voice server in the orchestrator pool
+ * would hand it tasks it silently drops.
+ */
+let orchestrator = null;
+if (nolag.token && (process.env.ORCHESTRATOR ?? "true") !== "false") {
+  try {
+    // Static in the blueprint, but an app created from an earlier version of it
+    // will not have the room, and the broker rejects rooms it has never been
+    // told about. Idempotent, so it costs nothing when it is already there.
+    await provisioner?.ensureRoom(ORCHESTRATOR_ROOM);
+
+    // A workaround for a broker bug, not a design rule.
+    //
+    // Measured on dev on 2026-08-30: once a second connection authenticates as
+    // the same actor, publishes stop being acknowledged on BOTH connections
+    // ("was not acknowledged within 10000ms") and are never delivered. The
+    // survivor does not recover when the other disconnects; the actor only
+    // works again once all of its connections have gone.
+    //
+    // Sharing a token across connections is supposed to be fine, and load
+    // balancing is built on it: the load-balance group defaults to the actor
+    // token id, so a pool sharing one token is the documented way to share
+    // work. Until this is fixed, the link takes a token of its own, because
+    // calls open a connection each and would otherwise break it on the second
+    // concurrent call.
+    const linkToken = process.env.VOICE_LINK_TOKEN ?? nolag.token;
+    if (linkToken === nolag.token) {
+      console.warn(
+        "[orchestrator] VOICE_LINK_TOKEN is unset, so this link shares an actor " +
+          "with the per-call connections. Asks will stop being delivered as soon " +
+          "as a call opens its own connection."
+      );
+    }
+    const client = NoLag(linkToken, { url: nolag.url });
+    client.on("error", (err) => console.error("[orchestrator]", err?.message ?? err));
+    await client.connect();
+
+    const agents = new NoLagAgents({
+      client,
+      appName: nolag.appSlug,
+      // Unique per process. Answers are published with a filter on this id, so
+      // two servers sharing one would deliver each other's answers to the
+      // wrong call, and every ask would time out despite the work being done.
+      agentId: `voice-${process.env.HOSTNAME ?? "host"}-${process.pid}`,
+      role: "agent",
+      rooms: [ORCHESTRATOR_ROOM],
+    });
+    await agents.ready();
+
+    orchestrator = new NoLagVoice({ agents }).orchestrator();
+    const capabilities = await orchestrator.ready();
+    console.log(
+      capabilities.length
+        ? `[orchestrator] ${capabilities.join(", ")} available in ${ORCHESTRATOR_ROOM}`
+        : `[orchestrator] nobody in ${ORCHESTRATOR_ROOM} yet, calls will run unaided`
+    );
+  } catch (err) {
+    console.warn(`[orchestrator] disabled: ${err.message}`);
+    orchestrator = null;
+  }
 }
 
 /**
@@ -259,13 +338,23 @@ wss.on("connection", (socket) => {
   const fanout = new Fanout();
   let room = null;
 
+  // The model is swapped for an orchestrator-aware wrapper once the call id is
+  // known, and the wrapper needs the session, which does not exist yet. Read
+  // through a getter rather than untangling that: the session reads `llm` on
+  // every turn, and no turn can happen before the call has started.
+  const callProviders = {
+    stt: providers.stt,
+    tts: providers.tts,
+    llm: providers.llm,
+  };
+
   // Note the session owns the transport's handlers, so everything the server
   // wants to know about the call comes through the observer instead. Setting
   // another transport.onStart here would quietly replace the session's own and
   // the call would never be greeted.
   const session = new VoiceSession({
     transport,
-    providers,
+    providers: callProviders,
     systemPrompt: config.systemPrompt,
     lines: config.lines,
     detector: config.detector,
@@ -283,6 +372,30 @@ wss.on("connection", (socket) => {
     onCallStarted(info) {
       console.log(`[call ${info.callId}] ${info.outbound ? "dialled" : "from"} ${info.peer}`);
       fanout.add(logObserver(info.callId));
+
+      // Robin can now ask a colleague. Turns that do not need one are
+      // untouched, including the streaming that starts speech on the first
+      // finished sentence.
+      if (orchestrator) {
+        callProviders.llm = orchestratedModel({
+          model: providers.llm,
+          bridge: orchestrator,
+          floor: session,
+          callId: info.callId,
+          graceMs: Number(process.env.ORCHESTRATOR_GRACE_MS ?? 1200),
+          lines: {
+            acknowledge: "Let me check that for you, one moment.",
+            stall: [
+              "Still checking on that.",
+              "The system is a bit slow today, bear with me.",
+            ],
+          },
+          onAsk: (event) =>
+            console.log(
+              `[call ${info.callId}] asked (${event.outcome} after ${event.waitedMs}ms): ${event.question}`
+            ),
+        });
+      }
 
       if (config.recordDir) {
         const recorder = createRecorder({ dir: config.recordDir, callId: info.callId });

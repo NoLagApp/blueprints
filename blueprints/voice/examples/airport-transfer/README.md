@@ -144,6 +144,75 @@ AGENT  | We close at 5 PM on weekdays and we're closed on weekends.
 
 The monitor joins the call's room as a `human` agent, reads the stream through `Observe`, and steers by sending to the call agent's `Inbox`. It never talks to Twilio or OpenRouter. It only holds a NoLag connection, which is exactly what a supervisor dashboard, an escalation agent, or a CRM logger would do.
 
+## The orchestrator: one async tool
+
+Robin has about a second to reply, which buys a small model with no tools. That
+is the right trade for conversation and the wrong one for deciding whether a
+booking can be moved, so left alone she will say "I have updated that for you"
+while nothing has changed.
+
+`src/orchestrator.js` is the other half: a separate process with a larger model,
+real tools, and as long as it needs. Run it alongside the server.
+
+```bash
+npm run orchestrator   # in one terminal
+npm start              # in another
+```
+
+Then ask something she cannot know:
+
+```
+CALLER | Hi Robin, it's Alex. My flight landed early, can you move my pickup?
+AGENT  | Let me check that for you, one moment.          <- the wait, made audible
+AGENT  | Still checking on that.
+AGENT  | Yes, I can move your airport pickup earlier. You're currently booked
+         for three forty pm, and I have one fifteen pm or one forty-five pm.
+```
+
+Three things are worth noticing in that exchange.
+
+**She has exactly one tool.** Not twenty. A small model handed twenty tools has
+to choose between them, and choosing badly is where small models fail. Handed
+one, its only judgement is "do I need help, and how do I phrase it". Which of
+the orchestrator's four tools to reach for is decided by the orchestrator, which
+is big enough to decide well.
+
+**The asking is asynchronous, and that is the feature.** Two tool calls against a
+large model took 7.8 seconds in that run. Nothing survives being nested inside a
+turn on a live phone call. So if the answer does not arrive within
+`ORCHESTRATOR_GRACE_MS`, the turn ends, Robin says she is looking into it, and
+the answer is spoken whenever it lands, in a gap. Answers that come back fast
+enough are folded into the reply and the caller never learns anything was asked.
+
+**The answer waits for a gap.** It is never spliced into whatever is playing, and
+never spoken over the caller, because there is one audio buffer to the far end.
+If the floor never frees it is dropped rather than said late.
+
+### Each process needs its own actor token
+
+Both of the following present as an ask that simply times out, with everything
+else looking healthy:
+
+- The broker never delivers a message back to the actor that published a
+  message. An orchestrator sharing a token with the call server is the same
+  actor, so it never sees a task at all.
+- Two live connections on one actor token stop being acknowledged on both
+  (observed on dev, 2026-08-30). Calls open a connection each, so the server's
+  link to the orchestrator room needs `VOICE_LINK_TOKEN` of its own.
+
+```bash
+curl -X POST "$NOLAG_API_URL/actors" \
+  -H "Authorization: Bearer $NOLAG_API_KEY" -H 'Content-Type: application/json' \
+  -d '{"name":"orchestrator","actorType":"service"}'
+```
+
+### Replacing the tools
+
+`TOOLS` in `src/orchestrator.js` is an in-memory booking store. Replace the
+bodies and keep the shape. One of them is worth copying as-is: references are
+spelled out loud and mistranscribed constantly ("TR-4417" arrives as "TR4417" or
+"PR4417"), so looking a customer up by name beats looking them up by reference.
+
 ## Model choices
 
 Everything is env-configurable:

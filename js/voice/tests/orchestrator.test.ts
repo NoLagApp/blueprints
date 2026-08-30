@@ -22,7 +22,9 @@ function fakeRoom(capabilities: string[] = ["orchestrate"]) {
       handlers[type] = (handlers[type] ?? []).filter((entry) => entry !== handler);
     },
     getAvailableCapabilities: () => capabilities,
-    fetchPresence: async () => [{ capabilities }],
+    fetchPresence: async (): Promise<Array<{ capabilities: string[]; actorId?: string }>> => [
+      { capabilities },
+    ],
     /** Answer the nth outstanding task, the way a worker would. */
     answer(
       task: TaskEnvelope,
@@ -158,6 +160,46 @@ describe("OrchestratorBridge", () => {
 
     expect(await bridge.ready()).toEqual(["lookup", "orchestrate"]);
     expect(bridge.available).toBe(true);
+  });
+
+  it("names the mistake that looks like a slow orchestrator", async () => {
+    const room = fakeRoom();
+    room.fetchPresence = async () => [{ capabilities: ["orchestrate"], actorId: "actor-1" }];
+    const agents = {
+      agentId: room.agentId,
+      room: () => room,
+      client: { actorId: "actor-1" },
+    } as unknown as NoLagAgents;
+    const warnings: string[] = [];
+    const original = console.warn;
+    console.warn = (message: string) => warnings.push(message);
+
+    try {
+      const bridge = new OrchestratorBridge({ agents });
+      await bridge.ready();
+
+      // Everything visible looks right: both sides connect, both join, presence
+      // lists them, the capability is discovered. The only symptom is that no
+      // answer ever comes, which reads like a slow orchestrator.
+      expect(bridge.sharesAnActor).toBe(true);
+      expect(warnings[0]).toMatch(/same actor|own actor token/);
+    } finally {
+      console.warn = original;
+    }
+  });
+
+  it("stays quiet when the orchestrator is a different actor", async () => {
+    const room = fakeRoom();
+    room.fetchPresence = async () => [{ capabilities: ["orchestrate"], actorId: "actor-2" }];
+    const agents = {
+      agentId: room.agentId,
+      room: () => room,
+      client: { actorId: "actor-1" },
+    } as unknown as NoLagAgents;
+
+    const bridge = new OrchestratorBridge({ agents });
+    await bridge.ready();
+    expect(bridge.sharesAnActor).toBe(false);
   });
 
   it("knows when nobody can help", async () => {
