@@ -52,6 +52,10 @@
  * `tasks` whether or not anything handles them, so sharing the group would hand
  * some tasks to a process that silently drops them.
  *
+ * Pooling needs a broker at kraken v0.7.0 / kraken-proxy v0.14.0 or newer.
+ * Before that a replica that scaled away kept its slot in the round robin, so
+ * a share of every batch went nowhere and the ask simply timed out.
+ *
  * ## The orchestrator needs its own actor token
  *
  * The broker never delivers a message back to the actor that published it. Two

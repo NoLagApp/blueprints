@@ -25,17 +25,18 @@
  * so replicas holding different tokens still each get a copy. Nothing about
  * that failure is loud; it shows up on the bill.
  *
- * Set ORCHESTRATOR_POOL to turn pooling on. It is off by default here because
- * of a broker-side problem worth knowing about before you rely on it: a
- * load-balance group appears to keep round-robining to members that have
- * disconnected. Measured on dev on 2026-08-30, a group that had had replicas
- * come and go delivered 3 of 6 tasks to its only live member, while the same
- * test against a fresh group name delivered 6 of 6. For an autoscaling pool
- * that means every scale-down silently drops a share of the work, and the
- * symptom on the call is an ask that times out for no visible reason.
+ * Set ORCHESTRATOR_POOL to turn pooling on. It is unset by default only
+ * because a single orchestrator has no work to share; there is no reason to
+ * avoid it. Verified against the broker: two replicas split 8 tasks 4/4 with
+ * no duplicates, and when one scales away the survivor picks up all of the
+ * next 6 rather than the departed one continuing to take a share.
  *
- * Until that is fixed, either run a single orchestrator, or give the pool a
- * fresh group name on each deploy.
+ * That last part needed a broker fix (kraken v0.7.0 / kraken-proxy v0.14.0).
+ * Before it, a disconnected member kept its slot in the round robin, so every
+ * scale-down silently dropped a share of the work and the symptom on the call
+ * was an ask that timed out for no visible reason. If you run against an older
+ * broker, either use a single orchestrator or give the pool a fresh group name
+ * on each deploy.
  */
 
 import "dotenv/config";
