@@ -25,7 +25,7 @@
     "metrics": {
       "logging": {
         "enabled": true,
-        "retention": "1h",
+        "retention": "1d",
         "replayEnabled": true,
         "maxReplayMessages": 500
       }
@@ -33,7 +33,7 @@
     "widgets": {
       "logging": {
         "enabled": true,
-        "retention": "1h",
+        "retention": "1d",
         "replayEnabled": true,
         "maxReplayMessages": 100
       }

@@ -19,6 +19,7 @@
   },
   "topics": [
     "messages",
+    "_stream",
     "_typing"
   ],
   "topicConfigs": {
@@ -28,6 +29,11 @@
         "retention": "7d",
         "replayEnabled": true,
         "maxReplayMessages": 100
+      }
+    },
+    "_stream": {
+      "logging": {
+        "enabled": false
       }
     },
     "_typing": {
@@ -44,6 +50,7 @@
         "description": "General discussion",
         "topics": [
           "messages",
+          "_stream",
           "_typing"
         ]
       },
@@ -53,6 +60,7 @@
         "description": "Off-topic chatter",
         "topics": [
           "messages",
+          "_stream",
           "_typing"
         ]
       },
@@ -62,6 +70,7 @@
         "description": "Questions and support",
         "topics": [
           "messages",
+          "_stream",
           "_typing"
         ]
       },
@@ -71,6 +80,7 @@
         "description": "Developer / engineering chat",
         "topics": [
           "messages",
+          "_stream",
           "_typing"
         ]
       }
