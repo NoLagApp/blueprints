@@ -1,13 +1,14 @@
 import type { RoomContext, MessageMeta } from '@nolag/js-sdk';
 import { EventEmitter } from './EventEmitter';
 import { NotificationStore } from './NotificationStore';
-import { generateId } from './utils';
+import { generateId, filterEmitOptions, mergeFilters, withoutFilters } from './utils';
 import { TOPIC_NOTIFICATIONS, TOPIC_READ } from './constants';
 import type {
   NotifyChannelEvents,
   Notification,
   ResolvedNotifyOptions,
   SendNotificationOptions,
+  FilterValue,
 } from './types';
 
 /**
@@ -25,6 +26,7 @@ export class NotifyChannel extends EventEmitter<NotifyChannelEvents> {
   private _log: (...args: unknown[]) => void;
   private _isConnected: () => boolean;
   private _active = false;
+  private _filters: FilterValue[] = [];
 
   // Stored topic handler refs — cleanup removes exactly these, never all
   // handlers for a topic (the client may be shared with other consumers).
@@ -83,7 +85,7 @@ export class NotifyChannel extends EventEmitter<NotifyChannelEvents> {
       isReplay: false,
     };
 
-    this._roomContext.emit(TOPIC_NOTIFICATIONS, {
+    const payload = {
       id: notification.id,
       channel: notification.channel,
       title: notification.title,
@@ -91,7 +93,58 @@ export class NotifyChannel extends EventEmitter<NotifyChannelEvents> {
       icon: notification.icon,
       data: notification.data,
       timestamp: notification.timestamp,
-    });
+    };
+
+    // Only pass options when there is a filter: an unfiltered send should look
+    // exactly as it did before filters existed.
+    const emitOpts = filterEmitOptions(opts);
+    if (Object.keys(emitOpts).length > 0) {
+      this._roomContext.emit(TOPIC_NOTIFICATIONS, payload, emitOpts);
+    } else {
+      this._roomContext.emit(TOPIC_NOTIFICATIONS, payload);
+    }
+  }
+
+  // ============ Filters ============
+
+  /** The filter values currently applied to this channel. */
+  get filters(): FilterValue[] {
+    return [...this._filters];
+  }
+
+  /**
+   * Replace this channel's filters — only notifications published with one of
+   * these values are delivered. Subscribe with your own user id (or role) to
+   * receive only what was addressed to you.
+   *
+   * Passing an empty array clears filtering and restores the wildcard
+   * subscription, which receives every notification on the channel.
+   *
+   * @example
+   * ```ts
+   * channel.setFilters(['user-42', 'all-hands']); // mine OR broadcast
+   * channel.setFilters([['eu', 'admin']]);        // eu AND admin
+   * channel.setFilters([]);                        // everything
+   * ```
+   */
+  setFilters(values: FilterValue[]): void {
+    this._filters = [...values];
+    // The core types filters as `string[]`, but both its implementation and
+    // the wire protocol accept AND groups (nested arrays).
+    this._roomContext.setFilters(TOPIC_NOTIFICATIONS, this._filters as unknown as string[]);
+  }
+
+  /** Add filter values to the existing set. Existing AND groups are kept. */
+  addFilters(values: string[]): void {
+    this.setFilters(mergeFilters(this._filters, values));
+  }
+
+  /**
+   * Remove filter values from the existing set. Removing the last value
+   * restores the wildcard subscription.
+   */
+  removeFilters(values: string[]): void {
+    this.setFilters(withoutFilters(this._filters, values));
   }
 
   // ============ Read Tracking ============
@@ -135,10 +188,17 @@ export class NotifyChannel extends EventEmitter<NotifyChannelEvents> {
   // ============ Internal (called by NoLagNotify) ============
 
   /** @internal Subscribe to notifications and _read topics */
-  _subscribe(): void {
+  _subscribe(filters?: FilterValue[]): void {
     this._log('Channel subscribe:', this.name);
 
-    this._roomContext.subscribe(TOPIC_NOTIFICATIONS);
+    this._filters = filters ? [...filters] : [];
+
+    // Read receipts stay unfiltered: they are this user's own cross-tab sync.
+    if (this._filters.length > 0) {
+      this._roomContext.subscribe(TOPIC_NOTIFICATIONS, { filters: this._filters });
+    } else {
+      this._roomContext.subscribe(TOPIC_NOTIFICATIONS);
+    }
     this._roomContext.subscribe(TOPIC_READ);
 
     // Listen for notifications (refs stored for handler-specific removal)

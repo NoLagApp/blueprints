@@ -16,4 +16,8 @@ export type {
   StreamClientEvents,
   StreamRoomEvents,
   StreamPresenceData,
+  FilterValue,
+  JoinStreamOptions,
+  StreamFilterTopic,
+  StreamFilterOptions,
 } from './types';

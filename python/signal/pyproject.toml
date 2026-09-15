@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nolag-signal"
-version = "0.2.0"
+version = "0.3.0"
 description = "WebRTC signaling SDK built on NoLag"
 requires-python = ">=3.10"
 dependencies = ["nolag>=2.5.1"]
@@ -14,3 +14,6 @@ dev = ["pytest>=7.0.0", "pytest-asyncio>=0.21.0"]
 
 [tool.setuptools.packages.find]
 include = ["nolag_signal*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

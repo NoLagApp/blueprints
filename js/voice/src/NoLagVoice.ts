@@ -24,19 +24,24 @@
 import { Observe, Inbox, type NoLagAgents } from "@nolag/agents";
 import { OrchestratorBridge, type OrchestratorBridgeOptions } from "./orchestrator.js";
 import { callAgentId, callRoomSlug } from "./rooms.js";
-import type {
-  CallControlHandlers,
-  CallEvent,
-  CallEventName,
-  CallInfo,
-  CallWatchHandlers,
-  TranscriptLine,
-  TurnMetrics,
+import {
+  CALL_EVENT_PREFIX,
+  CALL_TRANSCRIPT,
+  type CallControlHandlers,
+  type CallEvent,
+  type CallEventName,
+  type CallInfo,
+  type CallWatchHandlers,
+  type FilterValue,
+  type PublishCallOptions,
+  type TranscriptLine,
+  type TurnMetrics,
+  type WatchCallOptions,
 } from "./types.js";
 
 /** Category prefix, so voice events are distinguishable in a shared room. */
-const TRANSCRIPT = "call.transcript";
-const EVENT_PREFIX = "call.";
+const TRANSCRIPT = CALL_TRANSCRIPT;
+const EVENT_PREFIX = CALL_EVENT_PREFIX;
 
 export interface NoLagVoiceOptions {
   /**
@@ -71,6 +76,14 @@ export interface CallWatcher {
   say(text: string): void;
   /** Silently add guidance the model sees from the next turn on. */
   instruct(text: string): void;
+  /**
+   * Change which event categories this watcher receives, mid-call — e.g. drop
+   * the transcript when a dashboard collapses it.
+   *
+   * Only affects the events topic, so `say` and `instruct` keep working. An
+   * empty array restores the full stream.
+   */
+  setFilters(values: FilterValue[]): void;
 }
 
 export class NoLagVoice {
@@ -109,12 +122,17 @@ export class NoLagVoice {
    * The room must already exist, and this client must have connected after it
    * was created, otherwise the broker will not route anything.
    */
-  publishCall(callId: string, handlers: CallControlHandlers = {}): CallPublisher {
+  publishCall(
+    callId: string,
+    handlers: CallControlHandlers = {},
+    options: PublishCallOptions = {},
+  ): CallPublisher {
     const roomSlug = callRoomSlug(callId);
     const agentId = callAgentId(callId);
     const room = this.agents.room(roomSlug);
     const observe = new Observe(room, agentId);
     const inbox = new Inbox(room, agentId);
+    const tagCategories = options.tagCategories ?? true;
 
     inbox.onMessage((message) => {
       const payload = message.payload as { type?: string; text?: string };
@@ -125,11 +143,18 @@ export class NoLagVoice {
       }
     });
 
+    // Tagging routes each event to its own sub-topic, so a watcher can ask for
+    // the transcript without the lifecycle events or the other way round.
+    // Untagged watchers are unaffected: a wildcard subscription matches the
+    // sub-topics too.
+    const routed = (category: string) => (tagCategories ? { filter: category } : undefined);
+
     const emit = (event: CallEventName, data: Record<string, unknown> = {}) => {
-      observe.emit(`${EVENT_PREFIX}${event}`, data, event === "error" ? "error" : "info");
+      const category = `${EVENT_PREFIX}${event}`;
+      observe.emit(category, data, event === "error" ? "error" : "info", routed(category));
     };
     const line = (role: "caller" | "agent", text: string, meta: Record<string, unknown>) => {
-      observe.emit(TRANSCRIPT, { role, text, ...meta }, "info");
+      observe.emit(TRANSCRIPT, { role, text, ...meta }, "info", routed(TRANSCRIPT));
     };
 
     return {
@@ -153,12 +178,21 @@ export class NoLagVoice {
    * never delivers a message back to the actor that published it, so a watcher
    * sharing the call's token connects happily and then shows nothing at all.
    */
-  watchCall(callId: string, handlers: CallWatchHandlers = {}): CallWatcher {
+  watchCall(
+    callId: string,
+    handlers: CallWatchHandlers = {},
+    options: WatchCallOptions = {},
+  ): CallWatcher {
     const roomSlug = callRoomSlug(callId);
     const target = callAgentId(callId);
     const room = this.agents.room(roomSlug);
     const observe = new Observe(room, this.agents.agentId);
     const inbox = new Inbox(room, this.agents.agentId);
+
+    // Scoped to the events topic by Observe. Applying filters room-wide would
+    // also filter `inbox`, whose messages are published unfiltered — steering
+    // would stop arriving with nothing to show for it.
+    if (options.filters?.length) observe.setFilters(options.filters);
 
     observe.on((envelope) => {
       const payload = (envelope.payload ?? {}) as Record<string, unknown>;
@@ -180,6 +214,7 @@ export class NoLagVoice {
       roomSlug,
       say: (text: string) => inbox.send(target, { type: "say", text }),
       instruct: (text: string) => inbox.send(target, { type: "instruct", text }),
+      setFilters: (values) => observe.setFilters(values),
     };
   }
 

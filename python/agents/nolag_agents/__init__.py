@@ -3,9 +3,10 @@
 from .errors import IncompatibleProtocolError
 from .constants import AGENTS_PROTOCOL_VERSION
 from .client import NoLagAgents
-from .agent_room import AgentRoom
+from .agent_room import AgentRoom, AgentFilterTopic
 from .event_emitter import EventEmitter
 from .correlation import CorrelationManager
+from .utils import FilterValue
 from .patterns.handoff import Handoff
 from .patterns.blackboard import Blackboard
 from .patterns.inbox import Inbox
@@ -70,4 +71,6 @@ __all__ = [
     "ToolResponseEnvelope",
     "ConnectedAgent",
     "InboxMessage",
+    "FilterValue",
+    "AgentFilterTopic",
 ]

@@ -1,6 +1,10 @@
 import type { RoomContext } from "@nolag/js-sdk";
 import { EventEmitter } from "./EventEmitter";
-import type { AgentRoomEvents, TaskEnvelope, ResultEnvelope, AgentPresenceData } from "./types";
+import type {
+  AgentRoomEvents, TaskEnvelope, ResultEnvelope, AgentPresenceData,
+  FilterValue, AgentFilterOptions, AgentFilterTopic, AgentPublishOptions,
+} from "./types";
+import { filterEmitOptions, mergeFilters, withoutFilters } from "./utils";
 import {
   AGENTS_PROTOCOL_VERSION,
   TOPIC_TASKS,
@@ -13,6 +17,21 @@ import {
 } from "./constants";
 
 type TopicHandler = (data: unknown) => void;
+
+/**
+ * Maps the public topic names onto the wire topics. `results` is absent by
+ * design — it is reserved for directed replies keyed to this agent's id.
+ */
+const FILTER_TOPICS: Record<AgentFilterTopic, string> = {
+  tasks: TOPIC_TASKS,
+  tools: TOPIC_TOOLS,
+  state: TOPIC_STATE,
+  events: TOPIC_EVENTS,
+  inbox: TOPIC_INBOX,
+  approval: TOPIC_APPROVAL,
+};
+
+const ALL_FILTER_TOPICS = Object.keys(FILTER_TOPICS) as AgentFilterTopic[];
 
 /**
  * ConnectedAgent — represents an agent discovered via presence.
@@ -74,6 +93,11 @@ export class AgentRoom extends EventEmitter<AgentRoomEvents> {
   // handlers for a topic (the client may be shared with other consumers).
   private _topicHandlers: Array<{ topic: string; handler: TopicHandler }> = [];
 
+  /** Filter values applied per topic. `results` is never included. */
+  private _filters: Record<AgentFilterTopic, FilterValue[]> = {
+    tasks: [], tools: [], state: [], events: [], inbox: [], approval: [],
+  };
+
   /** @internal */
   constructor(
     name: string,
@@ -83,6 +107,7 @@ export class AgentRoom extends EventEmitter<AgentRoomEvents> {
     appName: string,
     isConnected: () => boolean,
     presence?: AgentPresenceData,
+    filters?: FilterValue[],
   ) {
     super();
     this.name = name;
@@ -92,6 +117,9 @@ export class AgentRoom extends EventEmitter<AgentRoomEvents> {
     this._appName = appName;
     this._isConnected = isConnected;
     this._presence = presence;
+    if (filters && filters.length > 0) {
+      for (const topic of ALL_FILTER_TOPICS) this._filters[topic] = [...filters];
+    }
     this._wireTopicListeners();
 
     // Set presence if provided (with the SDK's protocol version advertised
@@ -170,12 +198,15 @@ export class AgentRoom extends EventEmitter<AgentRoomEvents> {
   // ============================================================
 
   /** Publish to the tasks topic */
-  publishTask(envelope: TaskEnvelope): void {
+  publishTask(envelope: TaskEnvelope, opts?: AgentPublishOptions): void {
     // Auto-set createdBy if not set
     if (!envelope.createdBy) {
       envelope.createdBy = this.agentId;
     }
-    this._publish(TOPIC_TASKS, envelope);
+    // Routing by capability (`{ filter: envelope.capability }`) is opt-in:
+    // it only reaches workers that filter on it, and mixing filtered and
+    // wildcard workers in one load-balance pool double-delivers.
+    this._publish(TOPIC_TASKS, envelope, filterEmitOptions(opts));
   }
 
   /** Publish to the results topic — directed to the dispatcher via filter when replyTo is set */
@@ -194,26 +225,26 @@ export class AgentRoom extends EventEmitter<AgentRoomEvents> {
   }
 
   /** Publish to the state topic (retained) */
-  publishState(data: Record<string, unknown>): void {
+  publishState(data: Record<string, unknown>, opts?: AgentPublishOptions): void {
     // Auto-set updatedBy if not set
     if (!data.updatedBy) {
       data.updatedBy = this.agentId;
     }
-    this._publish(TOPIC_STATE, data, { retain: true });
+    this._publish(TOPIC_STATE, data, { retain: true, ...filterEmitOptions(opts) });
   }
 
   /** Publish to the events topic */
-  publishEvent(data: Record<string, unknown>): void {
+  publishEvent(data: Record<string, unknown>, opts?: AgentPublishOptions): void {
     // Auto-set emittedBy if not set
     if (!data.emittedBy) {
       data.emittedBy = this.agentId;
     }
-    this._publish(TOPIC_EVENTS, data);
+    this._publish(TOPIC_EVENTS, data, filterEmitOptions(opts));
   }
 
   /** Publish to the inbox topic */
-  publishInbox(data: Record<string, unknown>): void {
-    this._publish(TOPIC_INBOX, data);
+  publishInbox(data: Record<string, unknown>, opts?: AgentPublishOptions): void {
+    this._publish(TOPIC_INBOX, data, filterEmitOptions(opts));
   }
 
   /**
@@ -222,17 +253,91 @@ export class AgentRoom extends EventEmitter<AgentRoomEvents> {
    * replicas). Responses are directed to the requester on the results topic
    * via filter — never load-balanced, never broadcast.
    */
-  publishTools(data: Record<string, unknown>): void {
+  publishTools(data: Record<string, unknown>, opts?: AgentPublishOptions): void {
     if (data?.type === "tool_response" && typeof data.replyTo === "string" && data.replyTo) {
+      // Responses stay keyed to the requester; a caller filter must not
+      // redirect them away from the agent waiting on the correlation.
       this._publish(TOPIC_RESULTS, data, { filter: data.replyTo });
       return;
     }
-    this._publish(TOPIC_TOOLS, data);
+    this._publish(TOPIC_TOOLS, data, filterEmitOptions(opts));
   }
 
   /** Publish to the approval topic (retained) */
-  publishApproval(data: Record<string, unknown>): void {
-    this._publish(TOPIC_APPROVAL, data, { retain: true });
+  publishApproval(data: Record<string, unknown>, opts?: AgentPublishOptions): void {
+    this._publish(TOPIC_APPROVAL, data, { retain: true, ...filterEmitOptions(opts) });
+  }
+
+  // ============================================================
+  // FILTERS
+  // ============================================================
+
+  /** The filter values currently applied to this room, by topic. */
+  get filters(): Record<AgentFilterTopic, FilterValue[]> {
+    return {
+      tasks: [...this._filters.tasks],
+      tools: [...this._filters.tools],
+      state: [...this._filters.state],
+      events: [...this._filters.events],
+      inbox: [...this._filters.inbox],
+      approval: [...this._filters.approval],
+    };
+  }
+
+  /**
+   * Replace this room's filters — only messages published with one of these
+   * values are delivered. Applies to every filterable topic unless scoped with
+   * `{ topic }`.
+   *
+   * The usual case is a worker declaring its capabilities on `tasks`, so the
+   * broker routes only work it can do instead of every worker receiving every
+   * task and discarding the rest. Pair it with
+   * `publishTask(envelope, { filter: capability })` on the dispatcher.
+   *
+   * `results` is never filtered here: it carries directed replies keyed to
+   * this agent's id, and repointing it would strand pending results.
+   *
+   * With load balancing on, keep a worker pool uniform — the broker treats a
+   * wildcard and a filtered subscription as separate share groups, so a mixed
+   * pool delivers each task twice.
+   *
+   * Passing an empty array clears filtering and restores the wildcard
+   * subscription, which receives everything.
+   *
+   * @example
+   * ```ts
+   * room.setFilters(['ocr', 'translate'], { topic: 'tasks' });
+   * room.setFilters([]);  // everything
+   * ```
+   */
+  setFilters(values: FilterValue[], opts?: AgentFilterOptions): void {
+    for (const topic of this._targetTopics(opts)) {
+      this._filters[topic] = [...values];
+      // The core types filters as `string[]`, but both its implementation and
+      // the wire protocol accept AND groups (nested arrays).
+      this._roomContext.setFilters(FILTER_TOPICS[topic], values as unknown as string[]);
+    }
+  }
+
+  /** Add filter values to the existing set. Existing AND groups are kept. */
+  addFilters(values: string[], opts?: AgentFilterOptions): void {
+    for (const topic of this._targetTopics(opts)) {
+      this.setFilters(mergeFilters(this._filters[topic], values), { topic });
+    }
+  }
+
+  /**
+   * Remove filter values from the existing set. Removing the last value
+   * restores the wildcard subscription.
+   */
+  removeFilters(values: string[], opts?: AgentFilterOptions): void {
+    for (const topic of this._targetTopics(opts)) {
+      this.setFilters(withoutFilters(this._filters[topic], values), { topic });
+    }
+  }
+
+  private _targetTopics(opts?: AgentFilterOptions): AgentFilterTopic[] {
+    return opts?.topic ? [opts.topic] : ALL_FILTER_TOPICS;
   }
 
   // ============================================================
@@ -323,12 +428,27 @@ export class AgentRoom extends EventEmitter<AgentRoomEvents> {
     this._roomContext.on(topic, handler);
   }
 
-  private _publish(topic: string, data: unknown, options?: { retain?: boolean; filter?: string }): void {
+  private _publish(
+    topic: string,
+    data: unknown,
+    options?: { retain?: boolean; filter?: string; filters?: string[] },
+  ): void {
     this._log(`publish to ${topic} in room ${this.name}`);
-    if (options) {
+    // An empty options object is dropped rather than forwarded: publishing
+    // without filters should look exactly as it did before filters existed.
+    if (options && Object.keys(options).length > 0) {
       this._roomContext.emit(topic, data, options);
     } else {
       this._roomContext.emit(topic, data);
+    }
+  }
+
+  /** @internal Subscribe honouring the topic's filter set. */
+  private _subscribeFiltered(topic: string, values: FilterValue[]): void {
+    if (values.length > 0) {
+      this._roomContext.subscribe(topic, { filters: values });
+    } else {
+      this._roomContext.subscribe(topic);
     }
   }
 
@@ -368,8 +488,8 @@ export class AgentRoom extends EventEmitter<AgentRoomEvents> {
     // setting, so a pool shares each message one-of-N (no double handling):
     //  - tasks: each task goes to exactly one worker in the group
     //  - tools: each tool REQUEST goes to exactly one tool-server replica
-    this._roomContext.subscribe(TOPIC_TASKS);
-    this._roomContext.subscribe(TOPIC_TOOLS);
+    this._subscribeFiltered(TOPIC_TASKS, this._filters.tasks);
+    this._subscribeFiltered(TOPIC_TOOLS, this._filters.tools);
 
     // Replies are DIRECTED, not broadcast: the results topic carries task
     // results and tool responses published with `filter: <recipient agentId>`,
@@ -386,9 +506,13 @@ export class AgentRoom extends EventEmitter<AgentRoomEvents> {
     // Broadcast topics must always fan out, even when the connection enables
     // loadBalance for work distribution: state/events are broadcasts by
     // nature; inbox and approval messages are claimed client-side.
-    const broadcastTopics = [TOPIC_STATE, TOPIC_EVENTS, TOPIC_INBOX, TOPIC_APPROVAL];
-    for (const topic of broadcastTopics) {
-      this._roomContext.subscribe(topic, { loadBalance: false });
+    const broadcastTopics: AgentFilterTopic[] = ["state", "events", "inbox", "approval"];
+    for (const key of broadcastTopics) {
+      const values = this._filters[key];
+      this._roomContext.subscribe(FILTER_TOPICS[key], {
+        loadBalance: false,
+        ...(values.length > 0 ? { filters: values } : {}),
+      });
     }
 
     // Simple 1:1 mappings

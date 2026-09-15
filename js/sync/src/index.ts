@@ -21,4 +21,7 @@ export type {
   SyncPresenceData,
   SyncClientEvents,
   SyncRoomEvents,
+  SyncPublishOptions,
+  FilterValue,
+  JoinCollectionOptions,
 } from './types';

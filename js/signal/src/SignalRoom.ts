@@ -1,7 +1,7 @@
 import type { RoomContext } from '@nolag/js-sdk';
 import { EventEmitter } from './EventEmitter';
 import { PeerManager } from './PeerManager';
-import { generateId } from './utils';
+import { generateId, filterEmitOptions, mergeFilters, withoutFilters } from './utils';
 import { TOPIC_SIGNALING } from './constants';
 import type {
   SignalRoomEvents,
@@ -10,6 +10,8 @@ import type {
   Peer,
   SignalPresenceData,
   ResolvedSignalOptions,
+  SignalOptions,
+  FilterValue,
 } from './types';
 
 /**
@@ -31,6 +33,9 @@ export class SignalRoom extends EventEmitter<SignalRoomEvents> {
   // Stored topic handler ref — cleanup removes exactly this, never all
   // handlers for a topic (the client may be shared with other consumers).
   private _onSignalingRef: ((data: unknown) => void) | null = null;
+
+  /** Filter values applied to the signaling subscription. */
+  private _filters: FilterValue[] = [];
 
   /** @internal */
   constructor(
@@ -64,38 +69,43 @@ export class SignalRoom extends EventEmitter<SignalRoomEvents> {
   /**
    * Send an SDP offer to a specific peer.
    */
-  sendOffer(toPeerId: string, offer: RTCSessionDescriptionInit): void {
-    this.signal(toPeerId, 'offer', offer);
+  sendOffer(toPeerId: string, offer: RTCSessionDescriptionInit, opts?: SignalOptions): void {
+    this.signal(toPeerId, 'offer', offer, opts);
   }
 
   /**
    * Send an SDP answer to a specific peer.
    */
-  sendAnswer(toPeerId: string, answer: RTCSessionDescriptionInit): void {
-    this.signal(toPeerId, 'answer', answer);
+  sendAnswer(toPeerId: string, answer: RTCSessionDescriptionInit, opts?: SignalOptions): void {
+    this.signal(toPeerId, 'answer', answer, opts);
   }
 
   /**
    * Send an ICE candidate to a specific peer.
    */
-  sendIceCandidate(toPeerId: string, candidate: RTCIceCandidateInit): void {
-    this.signal(toPeerId, 'ice-candidate', candidate);
+  sendIceCandidate(toPeerId: string, candidate: RTCIceCandidateInit, opts?: SignalOptions): void {
+    this.signal(toPeerId, 'ice-candidate', candidate, opts);
   }
 
   /**
    * Send a bye signal to a specific peer (graceful close).
    */
-  sendBye(toPeerId: string): void {
-    this.signal(toPeerId, 'bye', {});
+  sendBye(toPeerId: string, opts?: SignalOptions): void {
+    this.signal(toPeerId, 'bye', {}, opts);
   }
 
   /**
    * Send a generic signal message to a specific peer.
+   *
+   * By default this broadcasts to the room and peers discard messages not
+   * addressed to them. Pass `{ filter: toPeerId }` to have the server do the
+   * addressing instead, so the signal is only delivered to that peer.
    */
   signal(
     toPeerId: string,
     type: SignalType,
     payload: RTCSessionDescriptionInit | RTCIceCandidateInit | Record<string, unknown>,
+    opts?: SignalOptions,
   ): void {
     const message: SignalMessage = {
       id: generateId(),
@@ -108,7 +118,55 @@ export class SignalRoom extends EventEmitter<SignalRoomEvents> {
 
     this._log('Sending signal:', type, '→', toPeerId);
 
-    this._roomContext.emit(TOPIC_SIGNALING, message, { echo: false });
+    this._roomContext.emit(TOPIC_SIGNALING, message, { echo: false, ...filterEmitOptions(opts) });
+  }
+
+  // ============ Filters ============
+
+  /** This peer's own id — the value to filter on to receive directed signals. */
+  get localPeerId(): string {
+    return this._localPeer.peerId;
+  }
+
+  /** The filter values currently applied to this room's signaling. */
+  get filters(): FilterValue[] {
+    return [...this._filters];
+  }
+
+  /**
+   * Replace this room's signaling filters — only signals published with one of
+   * these values are delivered. Set your own peerId to receive only signals
+   * addressed to you, and send with `{ filter: toPeerId }` so the server does
+   * the addressing rather than every peer discarding other peers' traffic.
+   *
+   * A filtered peer stops receiving unfiltered room broadcasts, so switch the
+   * whole room over together. Passing an empty array restores the wildcard
+   * subscription, which receives everything.
+   *
+   * @example
+   * ```ts
+   * room.setFilters([room.localPeerId]);  // only signals addressed to me
+   * room.setFilters([]);                  // back to room broadcast
+   * ```
+   */
+  setFilters(values: FilterValue[]): void {
+    this._filters = [...values];
+    // The core types filters as `string[]`, but both its implementation and
+    // the wire protocol accept AND groups (nested arrays).
+    this._roomContext.setFilters(TOPIC_SIGNALING, this._filters as unknown as string[]);
+  }
+
+  /** Add filter values to the existing set. Existing AND groups are kept. */
+  addFilters(values: string[]): void {
+    this.setFilters(mergeFilters(this._filters, values));
+  }
+
+  /**
+   * Remove filter values from the existing set. Removing the last value
+   * restores the wildcard subscription.
+   */
+  removeFilters(values: string[]): void {
+    this.setFilters(withoutFilters(this._filters, values));
   }
 
   // ============ Peers ============
@@ -130,10 +188,16 @@ export class SignalRoom extends EventEmitter<SignalRoomEvents> {
   // ============ Internal (called by NoLagSignal) ============
 
   /** @internal Subscribe to signaling topic and attach listeners */
-  _subscribe(): void {
+  _subscribe(filters?: FilterValue[]): void {
     this._log('Room subscribe:', this.name);
 
-    this._roomContext.subscribe(TOPIC_SIGNALING);
+    this._filters = filters ? [...filters] : [];
+
+    if (this._filters.length > 0) {
+      this._roomContext.subscribe(TOPIC_SIGNALING, { filters: this._filters });
+    } else {
+      this._roomContext.subscribe(TOPIC_SIGNALING);
+    }
 
     // Listen for signals (ref stored for handler-specific removal)
     this._onSignalingRef = (data: unknown) => {

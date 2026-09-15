@@ -21,6 +21,8 @@ import type {
   DashClientEvents,
   DashboardViewer,
   DashPresenceData,
+  FilterValue,
+  JoinPanelOptions,
 } from './types';
 
 /**
@@ -360,12 +362,15 @@ export class NoLagDash extends EventEmitter<DashClientEvents> {
    * Join a dashboard panel. If the panel was pre-subscribed via the `panels`
    * option, activates it. Otherwise creates, subscribes, and activates it.
    */
-  joinPanel(name: string, opts?: { metricFilters?: string[] }): DashboardPanel {
+  joinPanel(name: string, opts?: JoinPanelOptions): DashboardPanel {
     this._assertUsable();
 
     let panel = this._panels.get(name);
     if (!panel) {
-      panel = this._subscribePanelInternal(name, opts?.metricFilters);
+      panel = this._subscribePanelInternal(name, opts?.metricFilters, opts?.filters);
+    } else if (opts?.filters) {
+      // Already subscribed — re-point its filters rather than ignoring them.
+      panel.setFilters(opts.filters);
     }
     panel._activate();
     return panel;
@@ -412,7 +417,7 @@ export class NoLagDash extends EventEmitter<DashClientEvents> {
 
   // ============ Private: Panel Setup ============
 
-  private _subscribePanelInternal(name: string, metricFilters?: string[]): DashboardPanel {
+  private _subscribePanelInternal(name: string, metricFilters?: string[], filters?: FilterValue[]): DashboardPanel {
     this._log('Subscribing panel:', name);
 
     const roomContext = this._client.setApp(this._options.appName).setRoom(name);
@@ -427,7 +432,7 @@ export class NoLagDash extends EventEmitter<DashClientEvents> {
     );
 
     this._panels.set(name, panel);
-    panel._subscribe(metricFilters);
+    panel._subscribe(metricFilters, filters);
 
     return panel;
   }

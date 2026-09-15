@@ -6,4 +6,5 @@ export type {
   NoLagDashOptions, MetricPoint, WidgetUpdate, WidgetType,
   Aggregation, AggregationType, DashboardViewer,
   DashClientEvents, DashPanelEvents, DashPresenceData,
+  FilterValue, DashFilterTopic, DashFilterOptions, JoinPanelOptions,
 } from './types';

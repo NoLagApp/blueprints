@@ -47,4 +47,9 @@ export type {
   AgentPresenceData,
   AgentClientEvents,
   AgentRoomEvents,
+  FilterValue,
+  AgentFilterTopic,
+  AgentFilterOptions,
+  AgentPublishOptions,
+  JoinAgentRoomOptions,
 } from "./types";

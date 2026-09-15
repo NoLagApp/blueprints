@@ -21,6 +21,8 @@ import type {
   IoTClientEvents,
   Device,
   IoTPresenceData,
+  FilterValue,
+  JoinGroupOptions,
 } from './types';
 
 /**
@@ -352,13 +354,16 @@ export class NoLagIoT extends EventEmitter<IoTClientEvents> {
    * Join a device group. Creates, subscribes, and activates it.
    * Returns an existing group if already joined.
    */
-  joinGroup(name: string): DeviceGroup {
+  joinGroup(name: string, opts?: JoinGroupOptions): DeviceGroup {
     this._assertUsable();
 
     let group = this._groups.get(name);
     if (!group) {
-      group = this._subscribeGroup(name);
+      group = this._subscribeGroup(name, opts?.filters);
       group._activate();
+    } else if (opts?.filters) {
+      // Already joined — re-point its filters rather than ignoring them.
+      group.setFilters(opts.filters);
     }
 
     return group;
@@ -405,7 +410,7 @@ export class NoLagIoT extends EventEmitter<IoTClientEvents> {
 
   // ============ Private: Group Setup ============
 
-  private _subscribeGroup(name: string): DeviceGroup {
+  private _subscribeGroup(name: string, filters?: FilterValue[]): DeviceGroup {
     this._log('Subscribing group:', name);
 
     const roomContext = this._client.setApp(this._options.appName).setRoom(name);
@@ -419,7 +424,7 @@ export class NoLagIoT extends EventEmitter<IoTClientEvents> {
     );
 
     this._groups.set(name, group);
-    group._subscribe();
+    group._subscribe(filters);
 
     return group;
   }

@@ -7,7 +7,7 @@ from typing import Any, Callable
 
 from .constants import DEFAULT_APP_NAME, LOBBY_ID
 from .event_emitter import EventEmitter
-from .signal_room import SignalRoom
+from .signal_room import FilterValue, SignalRoom
 from .types import NoLagSignalOptions, Peer
 
 # nolag>=2.5.1 snapshots its handler sets before dispatch, so a handler is free
@@ -252,15 +252,30 @@ class NoLagSignal(EventEmitter):
         self.emit("detached")
         self._connected = False
 
-    async def join_room(self, name: str) -> SignalRoom:
-        """Join a signaling room. Returns existing room if already joined."""
+    async def join_room(
+        self,
+        name: str,
+        filters: list[FilterValue] | None = None,
+    ) -> SignalRoom:
+        """Join a signaling room. Returns existing room if already joined.
+
+        ``filters`` restricts delivery to signals published with one of those
+        values — join with your own peer id to receive only signals addressed
+        to you. Note this is exclusive: a filtered peer no longer receives the
+        room-wide broadcasts unfiltered peers send, so adopt it on every peer
+        at once or not at all.
+        """
         if not self._connected or not self._client:
             raise RuntimeError("Not connected. Call connect() first.")
 
         if name in self._rooms:
-            return self._rooms[name]
+            room = self._rooms[name]
+            # Already joined — re-point its filters rather than ignoring them.
+            if filters is not None:
+                await room.set_filters(filters)
+            return room
 
-        room = await self._subscribe_room(name)
+        room = await self._subscribe_room(name, filters)
         await room._activate(self._client)
         self._rooms[name] = room
         self._log(f"Joined room: {name}")
@@ -281,7 +296,11 @@ class NoLagSignal(EventEmitter):
 
     # -- Private: room setup --
 
-    async def _subscribe_room(self, name: str) -> SignalRoom:
+    async def _subscribe_room(
+        self,
+        name: str,
+        filters: list[FilterValue] | None = None,
+    ) -> SignalRoom:
         app_name = self._options.app_name or DEFAULT_APP_NAME
         app = self._client.set_app(app_name)
         room_context = app.set_room(name)
@@ -293,7 +312,7 @@ class NoLagSignal(EventEmitter):
             options=self._options,
             log=self._log,
         )
-        await room._subscribe()
+        await room._subscribe(filters)
         return room
 
     async def _leave_room_async(self, name: str) -> None:

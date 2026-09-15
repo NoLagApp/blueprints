@@ -27,11 +27,14 @@ export interface FakeLobbyContext {
 
 export interface FakeRoomContext {
   prefix: string;
-  subscribe: (topic: string) => void;
+  subscribe: (topic: string, options?: unknown) => void;
   unsubscribe: (topic: string, cb?: (err: Error | null) => void) => void;
   on: (topic: string, handler: Handler) => FakeRoomContext;
   off: (topic: string, handler?: Handler) => FakeRoomContext;
   emit: (topic: string, data: unknown, options?: unknown) => void;
+  setFilters: (topic: string, filters: unknown, cb?: (err: Error | null) => void) => void;
+  addFilters: (topic: string, filters: string[], cb?: (err: Error | null) => void) => void;
+  removeFilters: (topic: string, filters: string[], cb?: (err: Error | null) => void) => void;
   setPresence: (data: unknown) => void;
   fetchPresence: () => Promise<Array<{ actorTokenId: string; presence: unknown; joinedAt?: number }>>;
 }
@@ -42,8 +45,11 @@ export class FakeNoLagClient {
   actorType: string | null = null;
   projectId: string | null = null;
 
-  /** Every subscribe/unsubscribe/emit/presence call, in order */
-  sent: Array<{ op: string; topic?: string; data?: unknown }> = [];
+  /** Every subscribe/unsubscribe/emit/filter/presence call, in order */
+  sent: Array<{ op: string; topic?: string; data?: unknown; options?: unknown; filters?: unknown }> = [];
+
+  /** Filters last set per full topic, so tests can assert the live set. */
+  topicFilters = new Map<string, unknown>();
   /** Next lobby snapshot returned by lobby.subscribe()/fetchPresence() */
   lobbySnapshot: Record<string, Record<string, unknown>> = {};
 
@@ -68,9 +74,32 @@ export class FakeNoLagClient {
     return this;
   }
 
-  subscribe(topic: string, _options?: unknown, _cb?: unknown): void {
+  subscribe(topic: string, options?: unknown, _cb?: unknown): void {
     this._subscriptions.add(topic);
-    this.sent.push({ op: 'subscribe', topic });
+    this.sent.push({ op: 'subscribe', topic, options });
+    const filters = (options as { filters?: unknown } | undefined)?.filters;
+    if (filters !== undefined) this.topicFilters.set(topic, filters);
+  }
+
+  setFilters(topic: string, filters: unknown, cb?: (err: Error | null) => void): void {
+    this.sent.push({ op: 'setFilters', topic, filters });
+    if (Array.isArray(filters) && filters.length === 0) {
+      // Mirrors the core: an empty set reverts the topic to wildcard.
+      this.topicFilters.delete(topic);
+    } else {
+      this.topicFilters.set(topic, filters);
+    }
+    cb?.(null);
+  }
+
+  addFilters(topic: string, filters: string[], cb?: (err: Error | null) => void): void {
+    this.sent.push({ op: 'addFilters', topic, filters });
+    cb?.(null);
+  }
+
+  removeFilters(topic: string, filters: string[], cb?: (err: Error | null) => void): void {
+    this.sent.push({ op: 'removeFilters', topic, filters });
+    cb?.(null);
   }
 
   unsubscribe(topic: string, cb?: (err: Error | null) => void): void {
@@ -83,8 +112,8 @@ export class FakeNoLagClient {
     cb?.(null);
   }
 
-  emit(topic: string, data: unknown, _options?: unknown): void {
-    this.sent.push({ op: 'emit', topic, data });
+  emit(topic: string, data: unknown, options?: unknown): void {
+    this.sent.push({ op: 'emit', topic, data, options });
   }
 
   setPresence(data: unknown): void {
@@ -98,7 +127,8 @@ export class FakeNoLagClient {
         const prefix = `${appName}/${roomName}`;
         return {
           prefix,
-          subscribe: (topic: string) => client.subscribe(`${prefix}/${topic}`),
+          subscribe: (topic: string, options?: unknown) =>
+            client.subscribe(`${prefix}/${topic}`, options),
           unsubscribe: (topic: string, cb?: (err: Error | null) => void) =>
             client.unsubscribe(`${prefix}/${topic}`, cb),
           on: function (topic: string, handler: Handler) {
@@ -111,6 +141,12 @@ export class FakeNoLagClient {
           },
           emit: (topic: string, data: unknown, options?: unknown) =>
             client.emit(`${prefix}/${topic}`, data, options),
+          setFilters: (topic: string, filters: unknown, cb?: (err: Error | null) => void) =>
+            client.setFilters(`${prefix}/${topic}`, filters, cb),
+          addFilters: (topic: string, filters: string[], cb?: (err: Error | null) => void) =>
+            client.addFilters(`${prefix}/${topic}`, filters, cb),
+          removeFilters: (topic: string, filters: string[], cb?: (err: Error | null) => void) =>
+            client.removeFilters(`${prefix}/${topic}`, filters, cb),
           setPresence: (data: unknown) =>
             client.sent.push({ op: 'setPresence', topic: prefix, data }),
           fetchPresence: () => Promise.resolve([]),

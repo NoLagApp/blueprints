@@ -93,6 +93,25 @@ export interface SendOperationOptions {
   content?: string;
   /** Arbitrary operation payload for custom types */
   data?: Record<string, unknown>;
+  /**
+   * Route this operation to collaborators filtering on this value.
+   * Unfiltered (wildcard) collaborators still receive it.
+   */
+  filter?: string;
+  /**
+   * AND composite filter — reaches only collaborators filtering on all of
+   * these values together. Ignored when `filter` is also set.
+   */
+  filters?: string[];
+}
+
+/** Options for `NoLagCollab.joinDocument()`. */
+export interface JoinDocumentOptions {
+  /**
+   * Only receive operations published with one of these filter values.
+   * Omit (or pass an empty array) to receive every operation.
+   */
+  filters?: FilterValue[];
 }
 
 // ============ Cursors ============
@@ -192,3 +211,15 @@ export interface CollabDocumentEvents {
   replayStart: [info: { count: number }];
   replayEnd: [info: { replayed: number }];
 }
+
+
+// ============ Filters ============
+
+/**
+ * A single subscription filter value.
+ *
+ * A plain string is an OR term: `['alice', 'bob']` matches either. A nested
+ * array is an AND group: `[['alice', 'admin']]` matches only what was
+ * published tagged with both.
+ */
+export type FilterValue = string | string[];

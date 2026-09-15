@@ -3,7 +3,7 @@ import { EventEmitter } from './EventEmitter';
 import { MessageStore } from './MessageStore';
 import { PresenceManager } from './PresenceManager';
 import { TypingManager } from './TypingManager';
-import { generateId } from './utils';
+import { generateId, filterEmitOptions, mergeFilters, withoutFilters } from './utils';
 import {
   TOPIC_MESSAGES,
   TOPIC_TYPING,
@@ -21,6 +21,7 @@ import type {
   SendMessageOptions,
   StreamMessageOptions,
   MessageStream,
+  FilterValue,
 } from './types';
 
 /**
@@ -42,6 +43,7 @@ export class ChatRoom extends EventEmitter<ChatRoomEvents> {
   private _isConnected: () => boolean;
   private _unreadCount = 0;
   private _active = false;
+  private _filters: FilterValue[] = [];
 
   // Stored topic handler refs — cleanup removes exactly these, never all
   // handlers for a topic (the client may be shared with other consumers).
@@ -125,6 +127,55 @@ export class ChatRoom extends EventEmitter<ChatRoomEvents> {
     }
   }
 
+  // ============ Filters ============
+
+  /** The filter values currently applied to this room's messages. */
+  get filters(): FilterValue[] {
+    return [...this._filters];
+  }
+
+  /**
+   * Replace this room's message filters — only messages published with one of
+   * these values are delivered. Applies to live streams as well as finalized
+   * messages, so a filtered stream reaches the same audience as its final
+   * message.
+   *
+   * Passing an empty array clears filtering and restores the wildcard
+   * subscription, which receives everything on the topic.
+   *
+   * @example
+   * ```ts
+   * room.setFilters(['alice', 'bob']);      // alice OR bob
+   * room.setFilters([['alice', 'admin']]);  // alice AND admin
+   * room.setFilters([]);                    // everything
+   * ```
+   */
+  setFilters(values: FilterValue[]): void {
+    this._filters = [...values];
+    this._applyFilters(TOPIC_MESSAGES);
+    this._applyFilters(TOPIC_STREAM);
+  }
+
+  /** Add filter values to the existing set. Existing AND groups are kept. */
+  addFilters(values: string[]): void {
+    this.setFilters(mergeFilters(this._filters, values));
+  }
+
+  /**
+   * Remove filter values from the existing set. Removing the last value
+   * restores the wildcard subscription.
+   */
+  removeFilters(values: string[]): void {
+    this.setFilters(withoutFilters(this._filters, values));
+  }
+
+  /** @internal Push the current filter set to one topic. */
+  private _applyFilters(topic: string): void {
+    // The core types filters as `string[]`, but both its implementation and
+    // the wire protocol accept AND groups (nested arrays).
+    this._roomContext.setFilters(topic, this._filters as unknown as string[]);
+  }
+
   // ============ Messaging ============
 
   /**
@@ -148,7 +199,7 @@ export class ChatRoom extends EventEmitter<ChatRoomEvents> {
     this.emit('messageSent', message);
 
     // Publish to room (echo: false prevents duplicate)
-    this._publishFinalMessage(message);
+    this._publishFinalMessage(message, filterEmitOptions(options));
 
     // Mark as sent
     message.status = 'sent';
@@ -190,13 +241,17 @@ export class ChatRoom extends EventEmitter<ChatRoomEvents> {
     this._messageStore.add(message);
     this._typingManager.stopTyping();
 
+    // Deltas and the final message carry the same filter, so subscribers who
+    // see the stream grow are exactly those who end up with the message.
+    const filterOpts = filterEmitOptions(options);
+
     return new MessageStreamController(
       message,
       options?.flushIntervalMs ?? DEFAULT_STREAM_FLUSH_MS,
       {
         publishStream: (payload) =>
-          this._roomContext.emit(TOPIC_STREAM, payload, { echo: false }),
-        publishFinal: (m) => this._publishFinalMessage(m),
+          this._roomContext.emit(TOPIC_STREAM, payload, { echo: false, ...filterOpts }),
+        publishFinal: (m) => this._publishFinalMessage(m, filterOpts),
         emitStart: (m) => this.emit('streamStart', m),
         emitChunk: (m, delta) => this.emit('streamChunk', { message: m, delta }),
         emitEnd: (m) => this.emit('streamEnd', m),
@@ -233,7 +288,10 @@ export class ChatRoom extends EventEmitter<ChatRoomEvents> {
   }
 
   /** @internal Publish a final message on the persisted `messages` topic. */
-  private _publishFinalMessage(message: ChatMessage): void {
+  private _publishFinalMessage(
+    message: ChatMessage,
+    filterOpts: { filter?: string; filters?: string[] } = {},
+  ): void {
     this._roomContext.emit(
       TOPIC_MESSAGES,
       {
@@ -245,7 +303,7 @@ export class ChatRoom extends EventEmitter<ChatRoomEvents> {
         data: message.data,
         timestamp: message.timestamp,
       },
-      { echo: false },
+      { echo: false, ...filterOpts },
     );
   }
 
@@ -291,13 +349,22 @@ export class ChatRoom extends EventEmitter<ChatRoomEvents> {
   // ============ Internal (called by NoLagChat) ============
 
   /** @internal Subscribe to message/typing topics and attach listeners (all rooms) */
-  _subscribe(): void {
-    this._log('Room subscribe:', this.name);
+  _subscribe(filters?: FilterValue[]): void {
+    this._log('Room subscribe:', this.name, filters?.length ? `filters: ${filters.length}` : '');
 
-    // Subscribe to topics
-    this._roomContext.subscribe(TOPIC_MESSAGES);
+    this._filters = filters ? [...filters] : [];
+
+    // Subscribe to topics. Typing stays unfiltered: it is ephemeral, room-wide
+    // and already keyed by userId in the payload.
+    if (this._filters.length > 0) {
+      const opts = { filters: this._filters };
+      this._roomContext.subscribe(TOPIC_MESSAGES, opts);
+      this._roomContext.subscribe(TOPIC_STREAM, opts);
+    } else {
+      this._roomContext.subscribe(TOPIC_MESSAGES);
+      this._roomContext.subscribe(TOPIC_STREAM);
+    }
     this._roomContext.subscribe(TOPIC_TYPING);
-    this._roomContext.subscribe(TOPIC_STREAM);
 
     // Listen for messages (refs stored for handler-specific removal)
     this._onMessagesRef = (data: unknown, meta: MessageMeta) => {

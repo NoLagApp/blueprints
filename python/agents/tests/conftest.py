@@ -20,9 +20,16 @@ class MockRoomContext:
         self._published: list[tuple[str, Any, Any]] = []
         self._presence: dict[str, Any] | None = None
         self.unsubscribed: list[str] = []
+        #: ("set" | "add" | "remove", topic, filters) in call order.
+        self.filter_calls: list[tuple[str, str, Any]] = []
+        #: Filters last applied per topic, so tests can assert the live set.
+        self.topic_filters: dict[str, Any] = {}
 
     async def subscribe(self, topic: str, options: Any = None) -> None:
         self._subscribed.append((topic, options))
+        filters = getattr(options, "filters", None)
+        if filters:
+            self.topic_filters[topic] = filters
 
     @property
     def subscribed_topics(self) -> list[str]:
@@ -51,6 +58,20 @@ class MockRoomContext:
 
     async def emit(self, topic: str, data: Any, options: Any = None) -> None:
         self._published.append((topic, data, options))
+
+    async def set_filters(self, topic: str, filters: Any, callback: Any = None) -> None:
+        self.filter_calls.append(("set", topic, filters))
+        if isinstance(filters, list) and not filters:
+            # Mirrors the core: an empty set reverts the topic to wildcard.
+            self.topic_filters.pop(topic, None)
+        else:
+            self.topic_filters[topic] = filters
+
+    async def add_filters(self, topic: str, filters: list[str], callback: Any = None) -> None:
+        self.filter_calls.append(("add", topic, filters))
+
+    async def remove_filters(self, topic: str, filters: list[str], callback: Any = None) -> None:
+        self.filter_calls.append(("remove", topic, filters))
 
     async def set_presence(self, data: dict[str, Any]) -> None:
         self._presence = data

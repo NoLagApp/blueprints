@@ -6,4 +6,5 @@ export type {
   NoLagFeedOptions, FeedUser, FeedPost, CreatePostOptions, FeedComment,
   FeedReactionType, FeedReaction, MediaType, MediaAttachment,
   FeedClientEvents, FeedChannelEvents, FeedPresenceData,
+  FilterValue, JoinChannelOptions, FeedFilterTopic, FeedFilterOptions,
 } from './types';

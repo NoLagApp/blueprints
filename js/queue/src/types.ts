@@ -92,6 +92,12 @@ export interface Job {
   updatedAt: number;
   /** Timestamp when the job completed or failed */
   completedAt?: number;
+  /**
+   * The filter this job was routed with, if any. Every later lifecycle event
+   * for the job (claimed, progress, completed, failed, retrying) is published
+   * with the same value so it reaches the same workers and monitors.
+   */
+  filter?: string;
   /** Whether this job was replayed from history */
   isReplay: boolean;
 }
@@ -107,6 +113,31 @@ export interface AddJobOptions {
   priority?: JobPriority;
   /** Maximum number of attempts (default: DEFAULT_MAX_ATTEMPTS) */
   maxAttempts?: number;
+  /**
+   * Route this job to workers filtering on this value — the capability-routing
+   * case, e.g. `'gpu'` so only GPU workers see it. Load balancing still applies
+   * within the matching workers, so exactly one of them claims it.
+   *
+   * Workers subscribed without filters receive every job regardless.
+   */
+  filter?: string;
+  /**
+   * AND composite filter — reaches only workers filtering on all of these
+   * values together, e.g. `['gpu', 'eu-west']`. Ignored when `filter` is set.
+   */
+  filters?: string[];
+}
+
+/** Options for `NoLagQueue.joinQueue()`. */
+export interface JoinQueueOptions {
+  /**
+   * Only receive jobs published with one of these filter values — declare the
+   * capabilities this worker has. Combines with load balancing: the job goes
+   * to exactly one worker among those matching the filter.
+   *
+   * Omit (or pass an empty array) to receive every job on the queue.
+   */
+  filters?: FilterValue[];
 }
 
 // ============ Job Progress ============
@@ -179,3 +210,15 @@ export interface QueueRoomEvents {
   replayStart: [];
   replayEnd: [count: number];
 }
+
+
+// ============ Filters ============
+
+/**
+ * A single subscription filter value.
+ *
+ * A plain string is an OR term: `['alice', 'bob']` matches either. A nested
+ * array is an AND group: `[['alice', 'admin']]` matches only what was
+ * published tagged with both.
+ */
+export type FilterValue = string | string[];

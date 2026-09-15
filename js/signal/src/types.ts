@@ -93,3 +93,45 @@ export interface SignalPresenceData {
   peerId: string;
   metadata?: Record<string, unknown>;
 }
+
+
+/** Publish-side filter options for a signaling message. */
+export interface SignalOptions {
+  /**
+   * Route this signal to peers filtering on this value — normally the
+   * recipient's peerId, which turns the room broadcast into a direct send.
+   *
+   * Peers subscribed without filters still receive it, so this is safe to
+   * adopt one peer at a time.
+   */
+  filter?: string;
+  /**
+   * AND composite filter — reaches only peers filtering on all of these
+   * values together. Ignored when `filter` is also set.
+   */
+  filters?: string[];
+}
+
+/** Options for `NoLagSignal.joinRoom()`. */
+export interface JoinRoomOptions {
+  /**
+   * Only receive signals published with one of these filter values. Join with
+   * your own peerId to receive only signals addressed to you.
+   *
+   * Note this is exclusive: a filtered peer no longer receives the room-wide
+   * broadcasts that unfiltered peers send. Adopt it on every peer at once, or
+   * not at all.
+   */
+  filters?: FilterValue[];
+}
+
+// ============ Filters ============
+
+/**
+ * A single subscription filter value.
+ *
+ * A plain string is an OR term: `['alice', 'bob']` matches either. A nested
+ * array is an AND group: `[['alice', 'admin']]` matches only what was
+ * published tagged with both.
+ */
+export type FilterValue = string | string[];

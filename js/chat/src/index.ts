@@ -17,4 +17,6 @@ export type {
   SendMessageOptions,
   StreamMessageOptions,
   MessageStream,
+  FilterValue,
+  JoinRoomOptions,
 } from './types';

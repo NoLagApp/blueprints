@@ -3,7 +3,9 @@ import { EventEmitter } from './EventEmitter';
 import { DocumentStore } from './DocumentStore';
 import { ConflictResolver } from './ConflictResolver';
 import { PresenceManager } from './PresenceManager';
-import { generateId } from './utils';
+import {
+  generateId, inheritFilter, recordedFilter, mergeFilters, withoutFilters,
+} from './utils';
 import { TOPIC_CHANGES } from './constants';
 import type {
   SyncRoomEvents,
@@ -13,6 +15,8 @@ import type {
   SyncCollaborator,
   SyncPresenceData,
   ResolvedSyncOptions,
+  SyncPublishOptions,
+  FilterValue,
 } from './types';
 
 /**
@@ -36,6 +40,12 @@ export class SyncRoom extends EventEmitter<SyncRoomEvents> {
   // Stored topic handler ref — cleanup removes exactly this, never all
   // handlers for a topic (the client may be shared with other consumers).
   private _onChangesRef: ((data: unknown, meta: MessageMeta) => void) | null = null;
+
+  /** Filter values applied to the changes subscription. */
+  private _filters: FilterValue[] = [];
+
+  /** documentId → the filter its changes are published with. */
+  private _docFilters = new Map<string, string>();
 
   /** @internal */
   constructor(
@@ -71,9 +81,18 @@ export class SyncRoom extends EventEmitter<SyncRoomEvents> {
   /**
    * Create a new document locally and publish the change to all peers.
    */
-  createDocument(id: string, data: Record<string, unknown>): SyncDocument {
+  createDocument(
+    id: string,
+    data: Record<string, unknown>,
+    opts?: SyncPublishOptions,
+  ): SyncDocument {
     const doc = this._store.create(id, data, this._options.userId);
     this._log('Document created:', id);
+
+    // Remember the partition so this document's later updates and deletes
+    // reach the same peers its create did.
+    const filter = recordedFilter(opts);
+    if (filter) this._docFilters.set(doc.id, filter);
 
     const change = this._buildChange('create', doc.id, doc.version, data);
     this._publishChange(change);
@@ -119,6 +138,48 @@ export class SyncRoom extends EventEmitter<SyncRoomEvents> {
     return doc;
   }
 
+  // ============ Filters ============
+
+  /** The filter values currently applied to this collection's changes. */
+  get filters(): FilterValue[] {
+    return [...this._filters];
+  }
+
+  /**
+   * Replace this collection's filters — only changes published with one of
+   * these values are delivered. Use it to sync one partition of a large
+   * collection (a tenant, a region) instead of all of it.
+   *
+   * Passing an empty array clears filtering and restores the wildcard
+   * subscription, which receives every change.
+   *
+   * @example
+   * ```ts
+   * room.setFilters(['tenant-a']);            // one tenant
+   * room.setFilters([['tenant-a', 'eu']]);    // tenant-a AND eu
+   * room.setFilters([]);                       // whole collection
+   * ```
+   */
+  setFilters(values: FilterValue[]): void {
+    this._filters = [...values];
+    // The core types filters as `string[]`, but both its implementation and
+    // the wire protocol accept AND groups (nested arrays).
+    this._roomContext.setFilters(TOPIC_CHANGES, this._filters as unknown as string[]);
+  }
+
+  /** Add filter values to the existing set. Existing AND groups are kept. */
+  addFilters(values: string[]): void {
+    this.setFilters(mergeFilters(this._filters, values));
+  }
+
+  /**
+   * Remove filter values from the existing set. Removing the last value
+   * restores the wildcard subscription.
+   */
+  removeFilters(values: string[]): void {
+    this.setFilters(withoutFilters(this._filters, values));
+  }
+
   /**
    * Get a document by ID.
    */
@@ -136,10 +197,16 @@ export class SyncRoom extends EventEmitter<SyncRoomEvents> {
   // ============ Internal (called by NoLagSync) ============
 
   /** @internal Subscribe to changes topic and attach listeners */
-  _subscribe(): void {
+  _subscribe(filters?: FilterValue[]): void {
     this._log('Room subscribe:', this.name);
 
-    this._roomContext.subscribe(TOPIC_CHANGES);
+    this._filters = filters ? [...filters] : [];
+
+    if (this._filters.length > 0) {
+      this._roomContext.subscribe(TOPIC_CHANGES, { filters: this._filters });
+    } else {
+      this._roomContext.subscribe(TOPIC_CHANGES);
+    }
 
     // Listen for changes (ref stored for handler-specific removal)
     this._onChangesRef = (data: unknown) => {
@@ -230,6 +297,10 @@ export class SyncRoom extends EventEmitter<SyncRoomEvents> {
 
     this._log('Incoming change:', change.type, change.documentId, 'v' + change.version);
 
+    // Learn the document's partition from its author, so our own updates to it
+    // are routed to the same peers rather than falling back to unfiltered.
+    if (change.filter) this._docFilters.set(change.documentId, change.filter);
+
     const existing = this._store.get(change.documentId);
 
     // Conflict detection: document exists locally and versions diverge
@@ -265,7 +336,7 @@ export class SyncRoom extends EventEmitter<SyncRoomEvents> {
   }
 
   private _publishChange(change: SyncChange): void {
-    this._roomContext.emit(TOPIC_CHANGES, change, { echo: false });
+    this._roomContext.emit(TOPIC_CHANGES, change, { echo: false, ...inheritFilter(change.filter) });
   }
 
   private _buildChange(
@@ -283,6 +354,7 @@ export class SyncRoom extends EventEmitter<SyncRoomEvents> {
       updatedBy: this._options.userId,
       timestamp: Date.now(),
       optimistic: true,
+      filter: this._docFilters.get(documentId),
       isReplay: false,
     };
   }

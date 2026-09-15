@@ -174,3 +174,46 @@ export interface TrackZoneEvents {
   replayStart: [info: { count: number }];
   replayEnd: [info: { replayed: number }];
 }
+
+
+/** Publish-side filter options for a location update. */
+export interface SendLocationOptions {
+  /**
+   * Replace the grid-cell filter this update would normally be tagged with.
+   *
+   * By default every location is published with its geo-grid cell key, which
+   * is what makes geofence subscriptions work. Overriding it opts this update
+   * out of that routing: it reaches subscribers filtering on your value and no
+   * one filtering by cell, so geofence watchers will not see it.
+   */
+  filter?: string;
+  /**
+   * AND composite filter, with the same trade-off as `filter`. Ignored when
+   * `filter` is also set.
+   */
+  filters?: string[];
+}
+
+/** Options for `NoLagTrack.joinZone()`. */
+export interface JoinZoneOptions {
+  /**
+   * Extra location filter values to subscribe with. These are unioned with
+   * the geo-grid cells derived from this zone's geofences rather than
+   * replacing them, so adding filters never silently disables geofencing.
+   *
+   * Only useful alongside `sendLocation(point, meta, { filter })` publishes —
+   * default publishes are tagged with their grid cell, not these values.
+   */
+  filters?: FilterValue[];
+}
+
+// ============ Filters ============
+
+/**
+ * A single subscription filter value.
+ *
+ * A plain string is an OR term: `['alice', 'bob']` matches either. A nested
+ * array is an AND group: `[['alice', 'admin']]` matches only what was
+ * published tagged with both.
+ */
+export type FilterValue = string | string[];

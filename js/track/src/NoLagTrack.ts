@@ -20,6 +20,8 @@ import type {
   TrackClientEvents,
   TrackedAsset,
   TrackPresenceData,
+  FilterValue,
+  JoinZoneOptions,
 } from './types';
 
 /**
@@ -345,12 +347,12 @@ export class NoLagTrack extends EventEmitter<TrackClientEvents> {
    * Join a tracking zone. Creates, subscribes, and activates it.
    * Returns an existing zone if already joined.
    */
-  joinZone(name: string): TrackingZone {
+  joinZone(name: string, opts?: JoinZoneOptions): TrackingZone {
     this._assertUsable();
 
     let zone = this._zones.get(name);
     if (!zone) {
-      zone = this._subscribeZoneInternal(name);
+      zone = this._subscribeZoneInternal(name, opts?.filters);
       zone._activate();
     }
 
@@ -398,7 +400,7 @@ export class NoLagTrack extends EventEmitter<TrackClientEvents> {
 
   // ============ Private: Zone Setup ============
 
-  private _subscribeZoneInternal(name: string): TrackingZone {
+  private _subscribeZoneInternal(name: string, filters?: FilterValue[]): TrackingZone {
     this._log('Subscribing zone:', name);
 
     const roomContext = this._client.setApp(this._options.appName).setRoom(name);
@@ -412,7 +414,7 @@ export class NoLagTrack extends EventEmitter<TrackClientEvents> {
     );
 
     this._zones.set(name, zone);
-    zone._subscribe();
+    zone._subscribe(filters);
 
     return zone;
   }

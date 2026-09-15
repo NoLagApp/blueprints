@@ -64,6 +64,31 @@ export interface SendNotificationOptions {
   icon?: string;
   /** Optional structured data */
   data?: Record<string, unknown>;
+  /**
+   * Deliver this notification only to subscribers filtering on this value —
+   * a user id, role, or segment. Unfiltered (wildcard) subscribers on the
+   * channel still receive it.
+   */
+  filter?: string;
+  /**
+   * AND composite filter — reaches only subscribers filtering on all of
+   * these values together, e.g. `['eu', 'admin']`. Ignored when `filter` is
+   * also set.
+   */
+  filters?: string[];
+}
+
+/** Options for `NoLagNotify.subscribe()`. */
+export interface SubscribeChannelOptions {
+  /**
+   * Only receive notifications published with one of these filter values.
+   * This is the per-user/per-segment delivery case: subscribe with your own
+   * user id to receive only what was addressed to you.
+   *
+   * Omit (or pass an empty array) to receive every notification on the
+   * channel, including ones addressed to someone else.
+   */
+  filters?: FilterValue[];
 }
 
 // ============ Badge ============
@@ -103,3 +128,15 @@ export interface NotifyChannelEvents {
   replayStart: [data: { count: number }];
   replayEnd: [data: { replayed: number }];
 }
+
+
+// ============ Filters ============
+
+/**
+ * A single subscription filter value.
+ *
+ * A plain string is an OR term: `['alice', 'bob']` matches either. A nested
+ * array is an AND group: `[['alice', 'admin']]` matches only what was
+ * published tagged with both.
+ */
+export type FilterValue = string | string[];

@@ -14,6 +14,8 @@ import type {
   ResolvedAgentsOptions,
   AgentClientEvents,
   AgentPresenceData,
+  FilterValue,
+  JoinAgentRoomOptions,
 } from "./types";
 
 /**
@@ -321,11 +323,15 @@ export class NoLagAgents extends EventEmitter<AgentClientEvents> {
    * Get or create an AgentRoom wrapper.
    * If the room hasn't been joined yet, it will be joined automatically.
    */
-  room(name: string): AgentRoom {
+  room(name: string, opts?: JoinAgentRoomOptions): AgentRoom {
     this._assertUsable();
     const existing = this._rooms.get(name);
-    if (existing) return existing;
-    return this._joinRoomInternal(name);
+    if (existing) {
+      // Already joined — re-point its filters rather than ignoring them.
+      if (opts?.filters) existing.setFilters(opts.filters);
+      return existing;
+    }
+    return this._joinRoomInternal(name, opts?.filters);
   }
 
   // ============ Lobby (cross-room presence observation) ============
@@ -367,7 +373,7 @@ export class NoLagAgents extends EventEmitter<AgentClientEvents> {
 
   // ============ Private: Room Setup ============
 
-  private _joinRoomInternal(name: string): AgentRoom {
+  private _joinRoomInternal(name: string, filters?: FilterValue[]): AgentRoom {
     this._log(`joining room: ${name}`);
     const roomContext = this._client.setApp(this._options.appName).setRoom(name);
     const room = new AgentRoom(
@@ -378,6 +384,7 @@ export class NoLagAgents extends EventEmitter<AgentClientEvents> {
       this._options.appName,
       () => this._client.connected,
       this._options.presence,
+      filters,
     );
     this._rooms.set(name, room);
     return room;

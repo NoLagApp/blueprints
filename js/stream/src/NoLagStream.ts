@@ -15,6 +15,8 @@ import type {
   StreamClientEvents,
   StreamViewer,
   StreamPresenceData,
+  FilterValue,
+  JoinStreamOptions,
 } from './types';
 
 /**
@@ -358,12 +360,15 @@ export class NoLagStream extends EventEmitter<StreamClientEvents> {
    * `streams` option, activates it. Otherwise creates, subscribes, and
    * activates it.
    */
-  joinStream(name: string): StreamRoom {
+  joinStream(name: string, opts?: JoinStreamOptions): StreamRoom {
     this._assertUsable();
 
     let room = this._rooms.get(name);
     if (!room) {
-      room = this._subscribeRoomInternal(name);
+      room = this._subscribeRoomInternal(name, opts?.filters);
+    } else if (opts?.filters) {
+      // Already joined — re-point its filters rather than ignoring them.
+      room.setFilters(opts.filters);
     }
     room._activate();
     return room;
@@ -409,7 +414,7 @@ export class NoLagStream extends EventEmitter<StreamClientEvents> {
 
   // ============ Private: Stream Setup ============
 
-  private _subscribeRoomInternal(name: string): StreamRoom {
+  private _subscribeRoomInternal(name: string, filters?: FilterValue[]): StreamRoom {
     this._log('Subscribing stream:', name);
 
     const roomContext = this._client.setApp(this._options.appName).setRoom(name);
@@ -423,7 +428,7 @@ export class NoLagStream extends EventEmitter<StreamClientEvents> {
     );
 
     this._rooms.set(name, room);
-    room._subscribe();
+    room._subscribe(filters);
 
     return room;
   }

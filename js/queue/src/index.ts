@@ -23,4 +23,6 @@ export type {
   QueuePresenceData,
   QueueClientEvents,
   QueueRoomEvents,
+  FilterValue,
+  JoinQueueOptions,
 } from './types';

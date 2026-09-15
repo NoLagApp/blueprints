@@ -79,8 +79,40 @@ export interface SyncChange {
   timestamp: number;
   /** True if change was applied optimistically before server confirmation */
   optimistic: boolean;
+  /**
+   * The filter this change was published with, if any. Carried in the payload
+   * so peers learn a document's partition from its create and route their own
+   * updates and deletes to the same audience.
+   */
+  filter?: string;
   /** True if this change is being replayed from history */
   isReplay: boolean;
+}
+
+/** Publish-side filter options for a document change. */
+export interface SyncPublishOptions {
+  /**
+   * Route this document to peers filtering on this value — a tenant, region,
+   * or partition key. Later updates and deletes to the same document reuse it
+   * automatically. Unfiltered (wildcard) peers still receive it.
+   */
+  filter?: string;
+  /**
+   * AND composite filter — reaches only peers filtering on all of these
+   * values together. Ignored when `filter` is also set.
+   */
+  filters?: string[];
+}
+
+/** Options for `NoLagSync.joinCollection()`. */
+export interface JoinCollectionOptions {
+  /**
+   * Only receive changes published with one of these filter values — sync a
+   * partition of the collection rather than all of it.
+   *
+   * Omit (or pass an empty array) to receive every change.
+   */
+  filters?: FilterValue[];
 }
 
 // ============ Conflict ============
@@ -147,3 +179,15 @@ export interface SyncRoomEvents {
   replayStart: [info: { count: number }];
   replayEnd: [info: { replayed: number }];
 }
+
+
+// ============ Filters ============
+
+/**
+ * A single subscription filter value.
+ *
+ * A plain string is an OR term: `['alice', 'bob']` matches either. A nested
+ * array is an AND group: `[['alice', 'admin']]` matches only what was
+ * published tagged with both.
+ */
+export type FilterValue = string | string[];

@@ -103,3 +103,45 @@ export interface DashPanelEvents {
   replayStart: [data: { count: number }];
   replayEnd: [data: { replayed: number }];
 }
+
+
+/** The content topics a dash panel can filter independently. */
+export type DashFilterTopic = 'metrics' | 'widgets';
+
+/** Scope a filter call to one topic instead of all of them. */
+export interface DashFilterOptions {
+  /**
+   * Which topic to filter. Omit to apply the call to every content topic on
+   * the panel (metrics and widgets).
+   */
+  topic?: DashFilterTopic;
+}
+
+/** Options for `NoLagDash.joinPanel()`. */
+export interface JoinPanelOptions {
+  /**
+   * Only receive metrics published with one of these filter values.
+   *
+   * Note: unlike the other options here, an empty array means "receive no
+   * metrics" rather than "receive all" — it subscribes to a placeholder that
+   * matches nothing. That predates the uniform filter API and is kept so
+   * existing panels do not start flooding.
+   */
+  metricFilters?: string[];
+  /**
+   * Only receive metrics and widgets published with one of these filter
+   * values. Omit (or pass an empty array) to receive everything.
+   */
+  filters?: FilterValue[];
+}
+
+// ============ Filters ============
+
+/**
+ * A single subscription filter value.
+ *
+ * A plain string is an OR term: `['alice', 'bob']` matches either. A nested
+ * array is an AND group: `[['alice', 'admin']]` matches only what was
+ * published tagged with both.
+ */
+export type FilterValue = string | string[];

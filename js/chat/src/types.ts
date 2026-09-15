@@ -4,6 +4,25 @@
 
 import type { NoLagSocket } from '@nolag/js-sdk';
 
+// ============ Filters ============
+
+/**
+ * A single subscription filter value.
+ *
+ * A plain string is an OR term: `['alice', 'bob']` matches either. A nested
+ * array is an AND group: `[['alice', 'admin']]` matches only what was
+ * published tagged with both.
+ */
+export type FilterValue = string | string[];
+
+export interface JoinRoomOptions {
+  /**
+   * Only receive messages published with one of these filter values.
+   * Omit (or pass an empty array) to receive everything on the topic.
+   */
+  filters?: FilterValue[];
+}
+
 // ============ Options ============
 
 export interface NoLagChatOptions {
@@ -85,6 +104,16 @@ export interface ChatMessage {
 export interface SendMessageOptions {
   /** Optional structured data to attach */
   data?: Record<string, unknown>;
+  /**
+   * Route this message to subscribers filtering on this value.
+   * Unfiltered (wildcard) subscribers still receive it.
+   */
+  filter?: string;
+  /**
+   * AND composite filter — reaches only subscribers filtering on all of
+   * these values together. Ignored when `filter` is also set.
+   */
+  filters?: string[];
 }
 
 // ============ Streaming ============
@@ -98,6 +127,17 @@ export interface StreamMessageOptions {
    * Default 60. The local message text updates immediately regardless.
    */
   flushIntervalMs?: number;
+  /**
+   * Route this stream to subscribers filtering on this value. Applies to both
+   * the live deltas and the final persisted message, so a filtered stream
+   * reaches exactly the audience its final message does.
+   */
+  filter?: string;
+  /**
+   * AND composite filter — reaches only subscribers filtering on all of
+   * these values together. Ignored when `filter` is also set.
+   */
+  filters?: string[];
 }
 
 /**

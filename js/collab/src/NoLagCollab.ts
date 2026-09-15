@@ -22,6 +22,8 @@ import type {
   CollabClientEvents,
   CollabUser,
   CollabPresenceData,
+  FilterValue,
+  JoinDocumentOptions,
 } from './types';
 
 /**
@@ -351,13 +353,16 @@ export class NoLagCollab extends EventEmitter<CollabClientEvents> {
    * Join a collaborative document. Creates, subscribes, and activates it.
    * Returns an existing document if already joined.
    */
-  joinDocument(name: string): CollabDocument {
+  joinDocument(name: string, opts?: JoinDocumentOptions): CollabDocument {
     this._assertUsable();
 
     let doc = this._documents.get(name);
     if (!doc) {
-      doc = this._subscribeDocumentInternal(name);
+      doc = this._subscribeDocumentInternal(name, opts?.filters);
       doc._activate();
+    } else if (opts?.filters) {
+      // Already joined — re-point its filters rather than ignoring them.
+      doc.setFilters(opts.filters);
     }
 
     return doc;
@@ -404,7 +409,7 @@ export class NoLagCollab extends EventEmitter<CollabClientEvents> {
 
   // ============ Private: Document Setup ============
 
-  private _subscribeDocumentInternal(name: string): CollabDocument {
+  private _subscribeDocumentInternal(name: string, filters?: FilterValue[]): CollabDocument {
     this._log('Subscribing document:', name);
 
     const roomContext = this._client.setApp(this._options.appName).setRoom(name);
@@ -418,7 +423,7 @@ export class NoLagCollab extends EventEmitter<CollabClientEvents> {
     );
 
     this._documents.set(name, doc);
-    doc._subscribe();
+    doc._subscribe(filters);
 
     return doc;
   }

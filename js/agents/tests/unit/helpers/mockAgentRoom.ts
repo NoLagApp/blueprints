@@ -14,6 +14,7 @@ class MockRoomEmitter extends EventEmitter<AgentRoomEvents> {
 export function createMockAgentRoom(agents: Array<{ capabilities: string[]; protocol?: number; status?: string }> = [{ capabilities: ["*"] }]) {
   const emitter = new MockRoomEmitter();
   const published: Array<{ method: string; data: unknown; options?: unknown }> = [];
+  const filterCalls: Array<{ values: unknown; options?: unknown }> = [];
 
   const connectedAgents = agents.map((a, i) => ({
     actorId: `actor-${i}`,
@@ -41,7 +42,8 @@ export function createMockAgentRoom(agents: Array<{ capabilities: string[]; prot
     publishTask: (d: unknown) => published.push({ method: "publishTask", data: d }),
     publishResult: (d: unknown) => published.push({ method: "publishResult", data: d }),
     publishState: (d: unknown) => published.push({ method: "publishState", data: d }),
-    publishEvent: (d: unknown) => published.push({ method: "publishEvent", data: d }),
+    publishEvent: (d: unknown, o?: unknown) =>
+      published.push({ method: "publishEvent", data: d, options: o }),
     publishInbox: (d: unknown) => published.push({ method: "publishInbox", data: d }),
     publishTools: (d: unknown) => published.push({ method: "publishTools", data: d }),
     publishApproval: (d: unknown) => published.push({ method: "publishApproval", data: d }),
@@ -49,8 +51,11 @@ export function createMockAgentRoom(agents: Array<{ capabilities: string[]; prot
       event: K,
       ...args: AgentRoomEvents[K]
     ) => emitter.simulate(event, ...args),
+    setFilters: (values: unknown, options?: unknown) =>
+      filterCalls.push({ values, options }),
     getPublished: () => published,
     clearPublished: () => (published.length = 0),
+    getFilterCalls: () => filterCalls,
   };
 
   return room as any;

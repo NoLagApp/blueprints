@@ -177,3 +177,44 @@ describe("Observe pattern", () => {
     expect(event.emittedBy).toBe("monitor-1");
   });
 });
+
+// --- server-side filters ---
+
+describe("Observe filters", () => {
+  let room: ReturnType<typeof createMockAgentRoom>;
+  let observe: Observe;
+
+  beforeEach(() => {
+    room = createMockAgentRoom();
+    observe = new Observe(room, "agent-1");
+  });
+
+  it("emits unfiltered by default", () => {
+    observe.emit("task-started", { taskId: "t1" });
+    expect(room.getPublished()[0].options).toBeUndefined();
+  });
+
+  it("routes an emit when given a filter", () => {
+    observe.emit("task-started", { taskId: "t1" }, "info", { filter: "task-started" });
+    expect(room.getPublished()[0].options).toEqual({ filter: "task-started" });
+  });
+
+  it("scopes setFilters to the events topic", () => {
+    // Room-wide would also filter `inbox`, whose messages are published
+    // unfiltered and matched on `to` client-side — they would stop arriving.
+    observe.setFilters(["task-started"]);
+    expect(room.getFilterCalls()).toEqual([
+      { values: ["task-started"], options: { topic: "events" } },
+    ]);
+  });
+
+  it("passes an empty array through, restoring the wildcard", () => {
+    observe.setFilters([]);
+    expect(room.getFilterCalls()).toEqual([{ values: [], options: { topic: "events" } }]);
+  });
+
+  it("supports AND groups", () => {
+    observe.setFilters([["task-started", "urgent"]]);
+    expect(room.getFilterCalls()[0].values).toEqual([["task-started", "urgent"]]);
+  });
+});

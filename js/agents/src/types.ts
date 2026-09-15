@@ -203,3 +203,67 @@ export interface AgentRoomEvents {
   presenceLeave: [actorId: string];
   presenceUpdate: [actorId: string, data: AgentPresenceData];
 }
+
+
+/**
+ * The topics an agent room can filter.
+ *
+ * `results` is deliberately absent: it carries directed replies, routed by the
+ * recipient's agentId, and repointing its filters would strand every pending
+ * task result and tool response.
+ */
+export type AgentFilterTopic =
+  | "tasks"
+  | "tools"
+  | "state"
+  | "events"
+  | "inbox"
+  | "approval";
+
+/** Scope a filter call to one topic instead of all of them. */
+export interface AgentFilterOptions {
+  /** Which topic to filter. Omit to apply the call to every filterable topic. */
+  topic?: AgentFilterTopic;
+}
+
+/** Publish-side filter options for an agent message. */
+export interface AgentPublishOptions {
+  /**
+   * Route this message to agents filtering on this value — for tasks, the
+   * capability that handles it. Agents subscribed without filters still
+   * receive it.
+   */
+  filter?: string;
+  /**
+   * AND composite filter — reaches only agents filtering on all of these
+   * values together. Ignored when `filter` is also set.
+   */
+  filters?: string[];
+}
+
+/** Options for `NoLagAgents.room()`. */
+export interface JoinAgentRoomOptions {
+  /**
+   * Only receive messages published with one of these filter values. For a
+   * worker these are its capabilities, which moves capability matching from
+   * client-side discards to server-side routing.
+   *
+   * With load balancing on, every worker in a pool must use the same filter
+   * shape: the broker treats a wildcard subscription and a filtered one as
+   * separate share groups, so a mixed pool delivers each task twice.
+   *
+   * Does not affect `results`, which stays keyed to this agent's id.
+   */
+  filters?: FilterValue[];
+}
+
+// ============ Filters ============
+
+/**
+ * A single subscription filter value.
+ *
+ * A plain string is an OR term: `['alice', 'bob']` matches either. A nested
+ * array is an AND group: `[['alice', 'admin']]` matches only what was
+ * published tagged with both.
+ */
+export type FilterValue = string | string[];

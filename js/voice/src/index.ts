@@ -41,7 +41,12 @@ export type {
 export { createRoomProvisioner, callRoomSlug, callAgentId } from "./rooms.js";
 export type { RoomProvisioner, RoomProvisionerOptions } from "./rooms.js";
 
-export { VOICE_TOPICS } from "./types.js";
+export {
+  VOICE_TOPICS,
+  CALL_TRANSCRIPT,
+  CALL_EVENT_PREFIX,
+  callEventCategory,
+} from "./types.js";
 export type {
   CallInfo,
   CallEvent,
@@ -51,4 +56,7 @@ export type {
   CallWatchHandlers,
   TranscriptLine,
   TurnMetrics,
+  FilterValue,
+  WatchCallOptions,
+  PublishCallOptions,
 } from "./types.js";

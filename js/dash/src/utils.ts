@@ -1,3 +1,5 @@
+import type { FilterValue } from './types';
+
 export function generateId(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID();
@@ -8,6 +10,82 @@ export function generateId(): string {
 export function createLogger(prefix: string, enabled: boolean) {
   if (!enabled) { return (..._args: unknown[]) => {}; }
   return (...args: unknown[]) => { console.log(`[${prefix}]`, ...args); };
+}
+
+// ============ Filters ============
+
+/**
+ * Build the filter fragment of an emit options object.
+ *
+ * `filter` wins over `filters`: a publish is routed to exactly one topic, so
+ * honouring both would silently drop one of them.
+ */
+export function filterEmitOptions(opts?: {
+  filter?: string;
+  filters?: string[];
+}): { filter?: string; filters?: string[] } {
+  if (opts?.filter) return { filter: opts.filter };
+  if (opts?.filters && opts.filters.length > 0) return { filters: opts.filters };
+  return {};
+}
+
+/**
+ * Rebuild publish options from the filter a message arrived with, so a reply
+ * to it reaches the same audience the original did.
+ *
+ * The server joins AND groups into one composite value with '|', which is not
+ * a legal character in a plain filter, so split those back apart.
+ */
+export function inheritFilter(filter?: string): { filter?: string; filters?: string[] } {
+  if (!filter) return {};
+  if (filter.includes('|')) return { filters: filter.split('|') };
+  return { filter };
+}
+
+/**
+ * Merge OR terms into an existing filter set. AND groups (nested arrays) are
+ * preserved as-is — only plain string terms are deduplicated.
+ */
+export function mergeFilters(existing: FilterValue[], add: string[]): FilterValue[] {
+  const simple = new Set<string>();
+  const groups: string[][] = [];
+  for (const f of existing) {
+    if (typeof f === 'string') simple.add(f);
+    else groups.push(f);
+  }
+  for (const v of add) simple.add(v);
+  return [...simple, ...groups];
+}
+
+/**
+ * Drop OR terms from a filter set. AND groups are left untouched — remove
+ * those by calling `setFilters` with the set you want.
+ */
+export function withoutFilters(existing: FilterValue[], remove: string[]): FilterValue[] {
+  const drop = new Set(remove);
+  return existing.filter((f) => typeof f !== 'string' || !drop.has(f));
+}
+
+/**
+ * The composite key the server derives from an AND filter group: values are
+ * lowercased, sorted, and joined with '|'. Mirrored here so an item created
+ * locally carries the same filter string as one arriving off the wire.
+ */
+export function compositeFilterKey(values: string[]): string {
+  return [...values].map((v) => v.toLowerCase()).sort().join('|');
+}
+
+/**
+ * The single string form of whatever filter a publish used, for recording on
+ * the local copy of an item. Round-trips through `inheritFilter`.
+ */
+export function recordedFilter(opts?: {
+  filter?: string;
+  filters?: string[];
+}): string | undefined {
+  if (opts?.filter) return opts.filter;
+  if (opts?.filters && opts.filters.length > 0) return compositeFilterKey(opts.filters);
+  return undefined;
 }
 
 // ============ Wrapper registry ============

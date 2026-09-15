@@ -15,6 +15,8 @@ import type {
   SyncClientEvents,
   SyncCollaborator,
   SyncPresenceData,
+  FilterValue,
+  JoinCollectionOptions,
 } from './types';
 
 /**
@@ -334,12 +336,15 @@ export class NoLagSync extends EventEmitter<SyncClientEvents> {
    * Join a sync collection. Creates, subscribes, and activates it.
    * Returns an existing collection if already joined.
    */
-  joinCollection(name: string): SyncRoom {
+  joinCollection(name: string, opts?: JoinCollectionOptions): SyncRoom {
     this._assertUsable();
 
     let collection = this._collections.get(name);
     if (!collection) {
-      collection = this._joinCollectionInternal(name);
+      collection = this._joinCollectionInternal(name, opts?.filters);
+    } else if (opts?.filters) {
+      // Already joined — re-point its filters rather than ignoring them.
+      collection.setFilters(opts.filters);
     }
 
     return collection;
@@ -386,7 +391,7 @@ export class NoLagSync extends EventEmitter<SyncClientEvents> {
 
   // ============ Private: Collection Setup ============
 
-  private _joinCollectionInternal(name: string): SyncRoom {
+  private _joinCollectionInternal(name: string, filters?: FilterValue[]): SyncRoom {
     this._log('Subscribing collection:', name);
 
     const roomContext = this._client.setApp(this._options.appName).setRoom(name);
@@ -400,7 +405,7 @@ export class NoLagSync extends EventEmitter<SyncClientEvents> {
     );
 
     this._collections.set(name, collection);
-    collection._subscribe();
+    collection._subscribe(filters);
     collection._activate();
 
     return collection;

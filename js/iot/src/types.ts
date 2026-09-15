@@ -73,6 +73,32 @@ export interface TelemetryReading {
 export interface SendTelemetryOptions {
   unit?: string;
   tags?: Record<string, string>;
+  /**
+   * Route this reading to subscribers filtering on this value — a site, a
+   * sensor class, a criticality tier. Unfiltered subscribers still receive it.
+   */
+  filter?: string;
+  /**
+   * AND composite filter — reaches only subscribers filtering on all of these
+   * values together, e.g. `['site-a', 'critical']`. Ignored when `filter` is
+   * also set.
+   */
+  filters?: string[];
+}
+
+/** Options for `NoLagIoT.joinGroup()`. */
+export interface JoinGroupOptions {
+  /**
+   * Only receive telemetry published with one of these filter values — the
+   * way to subscribe a dashboard to one site's sensors instead of every
+   * device in the group.
+   *
+   * Commands and command acks are not affected: those already route by
+   * deviceId internally, and overriding that would break command delivery.
+   *
+   * Omit (or pass an empty array) to receive all telemetry.
+   */
+  filters?: FilterValue[];
 }
 
 // ============ Commands ============
@@ -155,3 +181,15 @@ export interface DeviceGroupEvents {
   replayStart: [];
   replayEnd: [];
 }
+
+
+// ============ Filters ============
+
+/**
+ * A single subscription filter value.
+ *
+ * A plain string is an OR term: `['alice', 'bob']` matches either. A nested
+ * array is an AND group: `[['alice', 'admin']]` matches only what was
+ * published tagged with both.
+ */
+export type FilterValue = string | string[];

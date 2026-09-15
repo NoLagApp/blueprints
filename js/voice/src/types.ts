@@ -19,6 +19,72 @@ export const VOICE_TOPICS = [
   "approval",
 ] as const;
 
+// ============ Filters ============
+
+/**
+ * A single subscription filter value.
+ *
+ * A plain string is an OR term: `['a', 'b']` matches either. A nested array is
+ * an AND group: `[['a', 'b']]` matches only what was published tagged with
+ * both.
+ */
+export type FilterValue = string | string[];
+
+/**
+ * The category a call's transcript lines are published under, and the value to
+ * filter on to receive only the conversation.
+ */
+export const CALL_TRANSCRIPT = "call.transcript";
+
+/** Prefix shared by every call lifecycle event category. */
+export const CALL_EVENT_PREFIX = "call.";
+
+/**
+ * The filter value for one call event — `callEventCategory('turn-complete')`
+ * is `'call.turn-complete'`.
+ */
+export function callEventCategory(event: CallEventName): string {
+  return `${CALL_EVENT_PREFIX}${event}`;
+}
+
+/** Options for `NoLagVoice.watchCall()`. */
+export interface WatchCallOptions {
+  /**
+   * Only receive events published under one of these categories — use
+   * `CALL_TRANSCRIPT` and `callEventCategory(name)` to name them.
+   *
+   * A transcript is the loud part of a call: one line per utterance, against a
+   * handful of lifecycle events. A dashboard that only plots turn metrics can
+   * skip the transcript entirely rather than receiving and discarding it.
+   *
+   * Scoped to the events topic, so steering via `say`/`instruct` keeps working.
+   * Omit (or pass an empty array) to receive everything.
+   *
+   * @example
+   * ```ts
+   * // transcript only
+   * voice.watchCall(id, handlers, { filters: [CALL_TRANSCRIPT] });
+   * // lifecycle only
+   * voice.watchCall(id, handlers, {
+   *   filters: [callEventCategory('call-ended'), callEventCategory('error')],
+   * });
+   * ```
+   */
+  filters?: FilterValue[];
+}
+
+/** Options for `NoLagVoice.publishCall()`. */
+export interface PublishCallOptions {
+  /**
+   * Tag each published event with its category so watchers can subscribe to
+   * just the parts they want (default: true).
+   *
+   * Safe to leave on: a watcher with no filters receives tagged events exactly
+   * as before. Set it to false only to reproduce pre-filter wire behaviour.
+   */
+  tagCategories?: boolean;
+}
+
 export interface CallInfo {
   callId: string;
   peer: string;

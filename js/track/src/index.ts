@@ -22,4 +22,7 @@ export type {
   TrackPresenceData,
   TrackClientEvents,
   TrackZoneEvents,
+  FilterValue,
+  JoinZoneOptions,
+  SendLocationOptions,
 } from './types';

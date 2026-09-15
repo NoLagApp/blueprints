@@ -20,6 +20,8 @@ import type {
   QueueClientEvents,
   QueueWorker,
   QueuePresenceData,
+  FilterValue,
+  JoinQueueOptions,
 } from './types';
 
 /**
@@ -349,13 +351,16 @@ export class NoLagQueue extends EventEmitter<QueueClientEvents> {
    * Join a queue room. Creates, subscribes, and activates it.
    * Returns an existing room if already joined.
    */
-  joinQueue(name: string): QueueRoom {
+  joinQueue(name: string, opts?: JoinQueueOptions): QueueRoom {
     this._assertUsable();
 
     let room = this._queues.get(name);
     if (!room) {
-      room = this._subscribeQueue(name);
+      room = this._subscribeQueue(name, opts?.filters);
       room._activate();
+    } else if (opts?.filters) {
+      // Already joined — re-point its filters rather than ignoring them.
+      room.setFilters(opts.filters);
     }
 
     return room;
@@ -402,7 +407,7 @@ export class NoLagQueue extends EventEmitter<QueueClientEvents> {
 
   // ============ Private: Queue Setup ============
 
-  private _subscribeQueue(name: string): QueueRoom {
+  private _subscribeQueue(name: string, filters?: FilterValue[]): QueueRoom {
     this._log('Subscribing queue:', name);
 
     const roomContext = this._client.setApp(this._options.appName).setRoom(name);
@@ -418,7 +423,7 @@ export class NoLagQueue extends EventEmitter<QueueClientEvents> {
     room._setLocalActorId(this._localWorker!.actorTokenId);
 
     this._queues.set(name, room);
-    room._subscribe();
+    room._subscribe(filters);
 
     return room;
   }

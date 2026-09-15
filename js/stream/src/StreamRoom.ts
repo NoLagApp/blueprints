@@ -4,7 +4,10 @@ import { CommentStore } from './CommentStore';
 import { ReactionManager } from './ReactionManager';
 import { PollManager } from './PollManager';
 import { PresenceManager } from './PresenceManager';
-import { generateId } from './utils';
+import {
+  generateId, filterEmitOptions, inheritFilter, recordedFilter,
+  mergeFilters, withoutFilters,
+} from './utils';
 import { TOPIC_COMMENTS, TOPIC_REACTIONS, TOPIC_POLLS } from './constants';
 import type {
   StreamRoomEvents,
@@ -15,7 +18,19 @@ import type {
   SendCommentOptions,
   CreatePollOptions,
   Poll,
+  FilterValue,
+  StreamFilterOptions,
+  StreamFilterTopic,
 } from './types';
+
+/** The content topics a stream filter applies to; reactions stay stream-wide. */
+const FILTERED_TOPICS = [TOPIC_COMMENTS, TOPIC_POLLS] as const;
+
+/** Maps the public topic names onto the wire topics. */
+const FILTER_TOPICS: Record<StreamFilterTopic, string> = {
+  comments: TOPIC_COMMENTS,
+  polls: TOPIC_POLLS,
+};
 
 export class StreamRoom extends EventEmitter<StreamRoomEvents> {
   readonly name: string;
@@ -35,7 +50,13 @@ export class StreamRoom extends EventEmitter<StreamRoomEvents> {
   // handlers for a topic (the client may be shared with other consumers).
   private _onCommentsRef: ((data: unknown, meta: MessageMeta) => void) | null = null;
   private _onReactionsRef: ((data: unknown) => void) | null = null;
-  private _onPollsRef: ((data: unknown) => void) | null = null;
+  private _onPollsRef: ((data: unknown, meta: MessageMeta) => void) | null = null;
+
+  /** Filter values applied per content topic. */
+  private _filters: Record<StreamFilterTopic, FilterValue[]> = { comments: [], polls: [] };
+
+  /** pollId → the filter its votes and close event are published with. */
+  private _pollFilters = new Map<string, string>();
 
   /** @internal */
   constructor(
@@ -108,7 +129,7 @@ export class StreamRoom extends EventEmitter<StreamRoomEvents> {
       text: comment.text,
       data: comment.data,
       timestamp: comment.timestamp,
-    }, { echo: false });
+    }, { echo: false, ...filterEmitOptions(options) });
 
     comment.status = 'sent';
     return comment;
@@ -125,7 +146,10 @@ export class StreamRoom extends EventEmitter<StreamRoomEvents> {
 
   createPoll(opts: CreatePollOptions): Poll {
     const poll = this._pollManager.createPoll(opts, this._localViewer.viewerId);
-    this._roomContext.emit(TOPIC_POLLS, poll, { echo: false });
+    // Remember the audience so votes and the close event follow the poll.
+    const filter = recordedFilter(opts);
+    if (filter) this._pollFilters.set(poll.id, filter);
+    this._roomContext.emit(TOPIC_POLLS, poll, { echo: false, ...filterEmitOptions(opts) });
     return poll;
   }
 
@@ -137,15 +161,68 @@ export class StreamRoom extends EventEmitter<StreamRoomEvents> {
         pollId,
         optionIndex,
         viewerId: this._localViewer.viewerId,
-      }, { echo: false });
+      }, { echo: false, ...inheritFilter(this._pollFilters.get(pollId)) });
     }
   }
 
   closePoll(pollId: string): void {
     const poll = this._pollManager.closePoll(pollId);
     if (poll) {
-      this._roomContext.emit(TOPIC_POLLS, poll, { echo: false });
+      this._roomContext.emit(TOPIC_POLLS, poll, { echo: false, ...inheritFilter(this._pollFilters.get(pollId)) });
     }
+  }
+
+  // ============ Filters ============
+
+  /** The filter values currently applied to this stream, by topic. */
+  get filters(): Record<StreamFilterTopic, FilterValue[]> {
+    return { comments: [...this._filters.comments], polls: [...this._filters.polls] };
+  }
+
+  /**
+   * Replace this stream's filters — only comments and polls published with one
+   * of these values are delivered. Reactions are left alone: they are
+   * ephemeral and stream-wide.
+   *
+   * Passing an empty array clears filtering and restores the wildcard
+   * subscription, which receives everything.
+   *
+   * @example
+   * ```ts
+   * room.setFilters(['es']);                          // both topics
+   * room.setFilters(['es'], { topic: 'comments' });    // comments only
+   * room.setFilters([['vip', 'es']]);                  // vip AND es
+   * room.setFilters([]);                                // everything
+   * ```
+   */
+  setFilters(values: FilterValue[], opts?: StreamFilterOptions): void {
+    for (const topic of this._targetTopics(opts)) {
+      this._filters[topic] = [...values];
+      // The core types filters as `string[]`, but both its implementation and
+      // the wire protocol accept AND groups (nested arrays).
+      this._roomContext.setFilters(FILTER_TOPICS[topic], values as unknown as string[]);
+    }
+  }
+
+  /** Add filter values to the existing set. Existing AND groups are kept. */
+  addFilters(values: string[], opts?: StreamFilterOptions): void {
+    for (const topic of this._targetTopics(opts)) {
+      this.setFilters(mergeFilters(this._filters[topic], values), { topic });
+    }
+  }
+
+  /**
+   * Remove filter values from the existing set. Removing the last value
+   * restores the wildcard subscription.
+   */
+  removeFilters(values: string[], opts?: StreamFilterOptions): void {
+    for (const topic of this._targetTopics(opts)) {
+      this.setFilters(withoutFilters(this._filters[topic], values), { topic });
+    }
+  }
+
+  private _targetTopics(opts?: StreamFilterOptions): StreamFilterTopic[] {
+    return opts?.topic ? [opts.topic] : (['comments', 'polls'] as StreamFilterTopic[]);
   }
 
   getViewers(): StreamViewer[] {
@@ -153,12 +230,19 @@ export class StreamRoom extends EventEmitter<StreamRoomEvents> {
   }
 
   /** @internal Subscribe to comment/reaction/poll topics and attach listeners */
-  _subscribe(): void {
+  _subscribe(filters?: FilterValue[]): void {
     this._log('Room subscribe:', this.name);
 
-    this._roomContext.subscribe(TOPIC_COMMENTS);
+    const initial = filters ? [...filters] : [];
+    this._filters = { comments: [...initial], polls: [...initial] };
+
+    if (initial.length > 0) {
+      const opts = { filters: initial };
+      for (const topic of FILTERED_TOPICS) this._roomContext.subscribe(topic, opts);
+    } else {
+      for (const topic of FILTERED_TOPICS) this._roomContext.subscribe(topic);
+    }
     this._roomContext.subscribe(TOPIC_REACTIONS);
-    this._roomContext.subscribe(TOPIC_POLLS);
 
     // Listen for comments (refs stored for handler-specific removal)
     this._onCommentsRef = (data: unknown, meta: MessageMeta) => {
@@ -174,8 +258,13 @@ export class StreamRoom extends EventEmitter<StreamRoomEvents> {
     this._roomContext.on(TOPIC_REACTIONS, this._onReactionsRef);
 
     // Listen for polls (create / vote / close)
-    this._onPollsRef = (data: unknown) => {
+    this._onPollsRef = (data: unknown, meta: MessageMeta) => {
       const raw = data as Record<string, unknown>;
+      // Learn each poll's audience from its author so our own vote and close
+      // events are routed to the same viewers.
+      if (meta.filter && raw.type !== 'vote' && typeof raw.id === 'string') {
+        this._pollFilters.set(raw.id, meta.filter);
+      }
       if (raw.type === 'vote') {
         this._pollManager.handleRemoteVote(raw as any);
       } else {

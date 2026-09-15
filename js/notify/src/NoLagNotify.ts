@@ -22,6 +22,8 @@ import type {
   NotifyClientEvents,
   NotifyPresenceData,
   BadgeCounts,
+  FilterValue,
+  SubscribeChannelOptions,
 } from './types';
 
 /**
@@ -333,13 +335,17 @@ export class NoLagNotify extends EventEmitter<NotifyClientEvents> {
    * Subscribe to a notification channel (idempotent).
    * Returns the NotifyChannel instance.
    */
-  subscribe(channelName: string): NotifyChannel {
+  subscribe(channelName: string, opts?: SubscribeChannelOptions): NotifyChannel {
     this._assertUsable();
 
     const existing = this._channels.get(channelName);
-    if (existing) return existing;
+    if (existing) {
+      // Already subscribed — re-point its filters rather than ignoring them.
+      if (opts?.filters) existing.setFilters(opts.filters);
+      return existing;
+    }
 
-    const channel = this._subscribeChannel(channelName);
+    const channel = this._subscribeChannel(channelName, opts?.filters);
     channel._activate();
 
     return channel;
@@ -392,7 +398,7 @@ export class NoLagNotify extends EventEmitter<NotifyClientEvents> {
 
   // ============ Private: Channel Setup ============
 
-  private _subscribeChannel(name: string): NotifyChannel {
+  private _subscribeChannel(name: string, filters?: FilterValue[]): NotifyChannel {
     this._log('Subscribing channel:', name);
 
     const roomContext = this._client.setApp(this._options.appName).setRoom(name);
@@ -405,7 +411,7 @@ export class NoLagNotify extends EventEmitter<NotifyClientEvents> {
     );
 
     this._channels.set(name, channel);
-    channel._subscribe();
+    channel._subscribe(filters);
 
     // Relay notifications up to the main client and update badges
     channel.on('notification', (notification) => {

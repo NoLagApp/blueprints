@@ -16,4 +16,7 @@ export type {
   SignalPresenceData,
   SignalClientEvents,
   SignalRoomEvents,
+  SignalOptions,
+  FilterValue,
+  JoinRoomOptions,
 } from './types';

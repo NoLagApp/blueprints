@@ -21,6 +21,8 @@ import type {
   ChatClientEvents,
   ChatUser,
   ChatPresenceData,
+  FilterValue,
+  JoinRoomOptions,
 } from './types';
 
 /**
@@ -364,7 +366,7 @@ export class NoLagChat extends EventEmitter<ChatClientEvents> {
    * If the room was pre-subscribed via the `rooms` option, activates it.
    * Otherwise creates, subscribes, and activates it.
    */
-  joinRoom(name: string): ChatRoom {
+  joinRoom(name: string, opts?: JoinRoomOptions): ChatRoom {
     this._assertUsable();
 
     // Deactivate the current active room
@@ -376,7 +378,11 @@ export class NoLagChat extends EventEmitter<ChatClientEvents> {
     // Get or create the room
     let room = this._rooms.get(name);
     if (!room) {
-      room = this._subscribeRoomInternal(name);
+      room = this._subscribeRoomInternal(name, opts?.filters);
+    } else if (opts?.filters) {
+      // Already subscribed (pre-subscribed via the `rooms` option, or an
+      // earlier join). Re-point its filters rather than ignoring them.
+      room.setFilters(opts.filters);
     }
 
     this._activeRoom = name;
@@ -475,7 +481,7 @@ export class NoLagChat extends EventEmitter<ChatClientEvents> {
 
   // ============ Private: Room Setup ============
 
-  private _subscribeRoomInternal(name: string): ChatRoom {
+  private _subscribeRoomInternal(name: string, filters?: FilterValue[]): ChatRoom {
     this._log('Subscribing room:', name);
 
     const roomContext = this._client.setApp(this._options.appName).setRoom(name);
@@ -489,7 +495,7 @@ export class NoLagChat extends EventEmitter<ChatClientEvents> {
     );
 
     this._rooms.set(name, room);
-    room._subscribe();
+    room._subscribe(filters);
 
     return room;
   }

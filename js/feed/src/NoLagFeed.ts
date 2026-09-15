@@ -21,6 +21,8 @@ import type {
   FeedClientEvents,
   FeedUser,
   FeedPresenceData,
+  FilterValue,
+  JoinChannelOptions,
 } from './types';
 
 /**
@@ -363,7 +365,7 @@ export class NoLagFeed extends EventEmitter<FeedClientEvents> {
    * If the channel was pre-subscribed via the `channels` option, activates it.
    * Otherwise creates, subscribes, and activates it.
    */
-  joinChannel(name: string): FeedChannel {
+  joinChannel(name: string, opts?: JoinChannelOptions): FeedChannel {
     this._assertUsable();
 
     // Deactivate the current active channel
@@ -375,7 +377,11 @@ export class NoLagFeed extends EventEmitter<FeedClientEvents> {
     // Get or create the channel
     let channel = this._channels.get(name);
     if (!channel) {
-      channel = this._subscribeChannelInternal(name);
+      channel = this._subscribeChannelInternal(name, opts?.filters);
+    } else if (opts?.filters) {
+      // Already subscribed (pre-subscribed via the `channels` option, or an
+      // earlier join). Re-point its filters rather than ignoring them.
+      channel.setFilters(opts.filters);
     }
 
     this._activeChannel = name;
@@ -460,7 +466,7 @@ export class NoLagFeed extends EventEmitter<FeedClientEvents> {
 
   // ============ Private: Channel Setup ============
 
-  private _subscribeChannelInternal(name: string): FeedChannel {
+  private _subscribeChannelInternal(name: string, filters?: FilterValue[]): FeedChannel {
     this._log('Subscribing channel:', name);
 
     const roomContext = this._client.setApp(this._options.appName).setRoom(name);
@@ -474,7 +480,7 @@ export class NoLagFeed extends EventEmitter<FeedClientEvents> {
     );
 
     this._channels.set(name, channel);
-    channel._subscribe();
+    channel._subscribe(filters);
 
     return channel;
   }

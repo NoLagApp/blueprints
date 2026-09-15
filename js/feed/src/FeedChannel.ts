@@ -3,12 +3,26 @@ import { EventEmitter } from './EventEmitter';
 import { PostStore } from './PostStore';
 import { ReactionManager } from './ReactionManager';
 import { PresenceManager } from './PresenceManager';
-import { generateId } from './utils';
+import {
+  generateId, filterEmitOptions, inheritFilter, recordedFilter,
+  mergeFilters, withoutFilters,
+} from './utils';
 import { TOPIC_POSTS, TOPIC_REACTIONS, TOPIC_COMMENTS } from './constants';
 import type {
   FeedChannelEvents, FeedPost, FeedComment, FeedUser,
-  FeedPresenceData, ResolvedFeedOptions, CreatePostOptions,
+  FeedPresenceData, ResolvedFeedOptions, CreatePostOptions, FilterValue,
+  FeedFilterOptions, FeedFilterTopic,
 } from './types';
+
+/** The content topics a channel filter applies to, kept in step deliberately. */
+const FILTERED_TOPICS = [TOPIC_POSTS, TOPIC_REACTIONS, TOPIC_COMMENTS] as const;
+
+/** Maps the public topic names onto the wire topics. */
+const FILTER_TOPICS: Record<FeedFilterTopic, string> = {
+  posts: TOPIC_POSTS,
+  reactions: TOPIC_REACTIONS,
+  comments: TOPIC_COMMENTS,
+};
 
 /**
  * FeedChannel — a single feed channel with posts, comments, reactions, and
@@ -30,6 +44,11 @@ export class FeedChannel extends EventEmitter<FeedChannelEvents> {
   private _isConnected: () => boolean;
   private _unreadCount = 0;
   private _active = false;
+
+  /** Filter values applied per content topic. */
+  private _filters: Record<FeedFilterTopic, FilterValue[]> = {
+    posts: [], reactions: [], comments: [],
+  };
 
   // Stored topic handler refs — cleanup removes exactly these, never all
   // handlers for a topic (the client may be shared with other consumers).
@@ -63,14 +82,15 @@ export class FeedChannel extends EventEmitter<FeedChannelEvents> {
     const post: FeedPost = {
       id: generateId(), userId: this._localUser.userId, username: this._localUser.username,
       avatar: this._localUser.avatar, content: opts.content, media: opts.media, data: opts.data,
-      likeCount: 0, commentCount: 0, likedByMe: false, timestamp: Date.now(), status: 'sending', isReplay: false,
+      likeCount: 0, commentCount: 0, likedByMe: false, timestamp: Date.now(),
+      filter: recordedFilter(opts), status: 'sending', isReplay: false,
     };
     this._postStore.add(post);
     this.emit('postSent', post);
     this._roomContext.emit(TOPIC_POSTS, {
       id: post.id, userId: post.userId, username: post.username, avatar: post.avatar,
       content: post.content, media: post.media, data: post.data, timestamp: post.timestamp,
-    }, { echo: false });
+    }, { echo: false, ...filterEmitOptions(opts) });
     post.status = 'sent';
     return post;
   }
@@ -81,7 +101,7 @@ export class FeedChannel extends EventEmitter<FeedChannelEvents> {
     const { likeCount, isNew } = this._reactionManager.like(postId, this._localUser.userId);
     if (isNew) {
       this._postStore.updateLikeCount(postId, likeCount, true);
-      this._roomContext.emit(TOPIC_REACTIONS, { postId, userId: this._localUser.userId, type: 'like', timestamp: Date.now() }, { echo: false });
+      this._roomContext.emit(TOPIC_REACTIONS, { postId, userId: this._localUser.userId, type: 'like', timestamp: Date.now() }, { echo: false, ...this._postFilter(postId) });
       this.emit('postLiked', { postId, userId: this._localUser.userId, likeCount });
     }
   }
@@ -90,7 +110,7 @@ export class FeedChannel extends EventEmitter<FeedChannelEvents> {
     const { likeCount, wasLiked } = this._reactionManager.unlike(postId, this._localUser.userId);
     if (wasLiked) {
       this._postStore.updateLikeCount(postId, likeCount, false);
-      this._roomContext.emit(TOPIC_REACTIONS, { postId, userId: this._localUser.userId, type: 'unlike', timestamp: Date.now() }, { echo: false });
+      this._roomContext.emit(TOPIC_REACTIONS, { postId, userId: this._localUser.userId, type: 'unlike', timestamp: Date.now() }, { echo: false, ...this._postFilter(postId) });
       this.emit('postUnliked', { postId, userId: this._localUser.userId, likeCount });
     }
   }
@@ -107,8 +127,74 @@ export class FeedChannel extends EventEmitter<FeedChannelEvents> {
     this._roomContext.emit(TOPIC_COMMENTS, {
       id: comment.id, postId, userId: comment.userId, username: comment.username,
       avatar: comment.avatar, text: comment.text, timestamp: comment.timestamp,
-    }, { echo: false });
+    }, { echo: false, ...this._postFilter(postId) });
     return comment;
+  }
+
+  // ============ Filters ============
+
+  /** The filter values currently applied to this channel, by topic. */
+  get filters(): Record<FeedFilterTopic, FilterValue[]> {
+    return {
+      posts: [...this._filters.posts],
+      reactions: [...this._filters.reactions],
+      comments: [...this._filters.comments],
+    };
+  }
+
+  /**
+   * Replace this channel's filters — only posts published with one of these
+   * values are delivered. Reactions and comments get the same set unless you
+   * scope the call with `{ topic }`, so you never receive a like for a post
+   * you cannot see.
+   *
+   * Passing an empty array clears filtering and restores the wildcard
+   * subscription, which receives everything.
+   *
+   * @example
+   * ```ts
+   * channel.setFilters(['sports', 'news']);   // sports OR news
+   * channel.setFilters([['sports', 'live']]); // sports AND live
+   * channel.setFilters([]);                    // everything
+   * ```
+   */
+  setFilters(values: FilterValue[], opts?: FeedFilterOptions): void {
+    for (const topic of this._targetTopics(opts)) {
+      this._filters[topic] = [...values];
+      // The core types filters as `string[]`, but both its implementation and
+      // the wire protocol accept AND groups (nested arrays).
+      this._roomContext.setFilters(FILTER_TOPICS[topic], values as unknown as string[]);
+    }
+  }
+
+  /** Add filter values to the existing set. Existing AND groups are kept. */
+  addFilters(values: string[], opts?: FeedFilterOptions): void {
+    for (const topic of this._targetTopics(opts)) {
+      this.setFilters(mergeFilters(this._filters[topic], values), { topic });
+    }
+  }
+
+  /**
+   * Remove filter values from the existing set. Removing the last value
+   * restores the wildcard subscription.
+   */
+  removeFilters(values: string[], opts?: FeedFilterOptions): void {
+    for (const topic of this._targetTopics(opts)) {
+      this.setFilters(withoutFilters(this._filters[topic], values), { topic });
+    }
+  }
+
+  private _targetTopics(opts?: FeedFilterOptions): FeedFilterTopic[] {
+    return opts?.topic ? [opts.topic] : (['posts', 'reactions', 'comments'] as FeedFilterTopic[]);
+  }
+
+  /**
+   * The publish options that put a reaction or comment in front of the same
+   * audience as the post it belongs to. An unknown post (never seen, or
+   * evicted from the cache) falls back to unfiltered.
+   */
+  private _postFilter(postId: string): { filter?: string; filters?: string[] } {
+    return inheritFilter(this._postStore.get(postId)?.filter);
   }
 
   getComments(postId: string): FeedComment[] {
@@ -125,12 +211,18 @@ export class FeedChannel extends EventEmitter<FeedChannelEvents> {
   getUsers(): FeedUser[] { return this._presenceManager.getAll(); }
 
   /** @internal Subscribe to post/reaction/comment topics and attach listeners (all channels) */
-  _subscribe(): void {
+  _subscribe(filters?: FilterValue[]): void {
     this._log('Channel subscribe:', this.name);
 
-    this._roomContext.subscribe(TOPIC_POSTS);
-    this._roomContext.subscribe(TOPIC_REACTIONS);
-    this._roomContext.subscribe(TOPIC_COMMENTS);
+    const initial = filters ? [...filters] : [];
+    this._filters = { posts: [...initial], reactions: [...initial], comments: [...initial] };
+
+    if (initial.length > 0) {
+      const opts = { filters: initial };
+      for (const topic of FILTERED_TOPICS) this._roomContext.subscribe(topic, opts);
+    } else {
+      for (const topic of FILTERED_TOPICS) this._roomContext.subscribe(topic);
+    }
 
     // Listen for posts (refs stored for handler-specific removal)
     this._onPostsRef = (data: unknown, meta: MessageMeta) => {
@@ -221,7 +313,8 @@ export class FeedChannel extends EventEmitter<FeedChannelEvents> {
       avatar: raw.avatar as string | undefined, content: raw.content as string,
       media: raw.media as any, data: raw.data as any,
       likeCount: 0, commentCount: 0, likedByMe: false,
-      timestamp: raw.timestamp as number, status: 'delivered', isReplay: meta.isReplay ?? false,
+      timestamp: raw.timestamp as number, filter: meta.filter,
+      status: 'delivered', isReplay: meta.isReplay ?? false,
     };
     if (this._postStore.add(post)) {
       this.emit('postCreated', post);

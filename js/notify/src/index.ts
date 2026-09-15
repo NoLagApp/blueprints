@@ -15,4 +15,6 @@ export type {
   NotifyClientEvents,
   NotifyChannelEvents,
   NotifyPresenceData,
+  FilterValue,
+  SubscribeChannelOptions,
 } from './types';

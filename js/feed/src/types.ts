@@ -98,6 +98,12 @@ export interface FeedPost {
   likedByMe: boolean;
   /** Timestamp (ms since epoch) */
   timestamp: number;
+  /**
+   * The filter value this post was published with, if any. Likes and comments
+   * on the post are published with the same value so they reach the same
+   * audience.
+   */
+  filter?: string;
   /** Delivery status */
   status: 'sending' | 'sent' | 'delivered';
   /** Whether this post came from replay (history) */
@@ -108,6 +114,42 @@ export interface CreatePostOptions {
   content: string;
   media?: MediaAttachment[];
   data?: Record<string, unknown>;
+  /**
+   * Route this post to subscribers filtering on this value — e.g. a topic or
+   * audience segment. Unfiltered (wildcard) subscribers still receive it.
+   *
+   * Likes and comments on the post automatically inherit this filter, so a
+   * filtered post's reactions never reach an audience that cannot see it.
+   */
+  filter?: string;
+  /**
+   * AND composite filter — reaches only subscribers filtering on all of
+   * these values together. Ignored when `filter` is also set.
+   */
+  filters?: string[];
+}
+
+/** The content topics a feed channel can filter independently. */
+export type FeedFilterTopic = 'posts' | 'reactions' | 'comments';
+
+/** Scope a filter call to one topic instead of all of them. */
+export interface FeedFilterOptions {
+  /**
+   * Which topic to filter. Omit to apply the call to all three, which is
+   * almost always what you want — filtering posts alone would still deliver
+   * likes and comments for posts you cannot see.
+   */
+  topic?: FeedFilterTopic;
+}
+
+/** Options for `NoLagFeed.joinChannel()`. */
+export interface JoinChannelOptions {
+  /**
+   * Only receive posts published with one of these filter values. Applies to
+   * the channel's reactions and comments too, so the three stay in step.
+   * Omit (or pass an empty array) to receive everything.
+   */
+  filters?: FilterValue[];
 }
 
 // ============ Comment ============
@@ -178,3 +220,15 @@ export interface FeedChannelEvents {
   replayEnd: [data: { replayed: number }];
   unreadChanged: [data: { channel: string; count: number }];
 }
+
+
+// ============ Filters ============
+
+/**
+ * A single subscription filter value.
+ *
+ * A plain string is an OR term: `['alice', 'bob']` matches either. A nested
+ * array is an AND group: `[['alice', 'admin']]` matches only what was
+ * published tagged with both.
+ */
+export type FilterValue = string | string[];

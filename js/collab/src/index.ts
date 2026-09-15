@@ -20,4 +20,6 @@ export type {
   CollabPresenceData,
   CollabClientEvents,
   CollabDocumentEvents,
+  FilterValue,
+  JoinDocumentOptions,
 } from './types';

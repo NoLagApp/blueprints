@@ -4,7 +4,7 @@ import { PresenceManager } from './PresenceManager';
 import { LocationStore } from './LocationStore';
 import { GeofenceManager } from './GeofenceManager';
 import { pointToCell, geofenceToCells } from './GeoGrid';
-import { generateId } from './utils';
+import { generateId, filterEmitOptions, mergeFilters, withoutFilters } from './utils';
 import { TOPIC_LOCATIONS, TOPIC_GEOFENCE } from './constants';
 import type {
   TrackZoneEvents,
@@ -15,6 +15,8 @@ import type {
   TrackedAsset,
   TrackPresenceData,
   ResolvedTrackOptions,
+  FilterValue,
+  SendLocationOptions,
 } from './types';
 
 /**
@@ -33,6 +35,12 @@ export class TrackingZone extends EventEmitter<TrackZoneEvents> {
   private _locationStore: LocationStore;
   private _geofenceManager: GeofenceManager;
   private _locationCells = new Set<string>();
+
+  /**
+   * Filter values set through the public filter API. Kept apart from the
+   * geofence cells so recalculating one never discards the other.
+   */
+  private _userFilters: FilterValue[] = [];
   private _log: (...args: unknown[]) => void;
   private _isConnected: () => boolean;
 
@@ -81,7 +89,11 @@ export class TrackingZone extends EventEmitter<TrackZoneEvents> {
    * Publish a location update for the local asset.
    * Returns the LocationUpdate that was sent.
    */
-  sendLocation(point: GeoPoint, metadata?: Record<string, unknown>): LocationUpdate {
+  sendLocation(
+    point: GeoPoint,
+    metadata?: Record<string, unknown>,
+    opts?: SendLocationOptions,
+  ): LocationUpdate {
     const update: LocationUpdate = {
       id: generateId(),
       assetId: this._localAsset.assetId,
@@ -92,8 +104,13 @@ export class TrackingZone extends EventEmitter<TrackZoneEvents> {
     };
 
     const cellKey = pointToCell(point);
+    // Default routing is by grid cell, which is what geofence subscriptions
+    // match on. An explicit filter replaces it (see SendLocationOptions).
+    const routing = opts?.filter || opts?.filters?.length
+      ? filterEmitOptions(opts)
+      : { filter: cellKey };
     this._log('Sending location:', update.assetId, point.lat, point.lng, 'cell:', cellKey);
-    this._roomContext.emit(TOPIC_LOCATIONS, update, { echo: false, filter: cellKey } as any);
+    this._roomContext.emit(TOPIC_LOCATIONS, update, { echo: false, ...routing });
 
     // Store locally and emit event (no echo needed — we handle our own updates)
     this._locationStore.add(update);
@@ -110,6 +127,50 @@ export class TrackingZone extends EventEmitter<TrackZoneEvents> {
    */
   getLocationHistory(assetId?: string): LocationUpdate[] {
     return this._locationStore.getHistory(assetId);
+  }
+
+  // ============ Filters ============
+
+  /**
+   * The filter values set through this API. Does not include the geo-grid
+   * cells derived from geofences — those are managed separately and unioned
+   * with these when subscribing.
+   */
+  get filters(): FilterValue[] {
+    return [...this._userFilters];
+  }
+
+  /**
+   * Replace this zone's location filters. The values are unioned with the
+   * geo-grid cells from any geofences rather than replacing them, so calling
+   * this never silently switches geofencing off.
+   *
+   * Only matters for updates sent with an explicit
+   * `sendLocation(point, meta, { filter })` — ordinary updates are tagged with
+   * their grid cell, which these values will not match.
+   *
+   * Passing an empty array removes your values and leaves the geofence cells
+   * in place; with no geofences either, the subscription is a wildcard.
+   *
+   * @example
+   * ```ts
+   * zone.setFilters(['fleet-a']);   // plus whatever geofences are active
+   * zone.setFilters([]);            // geofence cells only
+   * ```
+   */
+  setFilters(values: FilterValue[]): void {
+    this._userFilters = [...values];
+    this._applyLocationFilters();
+  }
+
+  /** Add filter values to the existing set. Existing AND groups are kept. */
+  addFilters(values: string[]): void {
+    this.setFilters(mergeFilters(this._userFilters, values));
+  }
+
+  /** Remove filter values from the existing set. */
+  removeFilters(values: string[]): void {
+    this.setFilters(withoutFilters(this._userFilters, values));
   }
 
   // ============ Geofencing ============
@@ -160,12 +221,14 @@ export class TrackingZone extends EventEmitter<TrackZoneEvents> {
   // ============ Internal (called by NoLagTrack) ============
 
   /** @internal Subscribe to locations and geofence topics, attach listeners */
-  _subscribe(): void {
+  _subscribe(filters?: FilterValue[]): void {
     this._log('Zone subscribe:', this.name);
 
-    // If geofences are pre-configured, subscribe with cell filters
-    // so we only receive location updates from relevant areas.
-    // Without geofences, subscribe as wildcard to receive all locations.
+    this._userFilters = filters ? [...filters] : [];
+
+    // If geofences are pre-configured, subscribe with their cell filters so we
+    // only receive location updates from relevant areas. User-supplied filters
+    // are unioned in. With neither, subscribe as wildcard.
     const geofences = this._geofenceManager.getGeofences();
     if (geofences.length > 0) {
       const cells = new Set<string>();
@@ -174,7 +237,11 @@ export class TrackingZone extends EventEmitter<TrackZoneEvents> {
       }
       this._locationCells = cells;
       this._log('Subscribing to locations with', cells.size, 'cell filters');
-      this._roomContext.subscribe(TOPIC_LOCATIONS, { filters: [...cells] } as any);
+    }
+
+    const effective = this._effectiveLocationFilters();
+    if (effective.length > 0) {
+      this._roomContext.subscribe(TOPIC_LOCATIONS, { filters: effective });
     } else {
       this._roomContext.subscribe(TOPIC_LOCATIONS);
     }
@@ -289,11 +356,12 @@ export class TrackingZone extends EventEmitter<TrackZoneEvents> {
   private _updateLocationFilters(): void {
     const geofences = this._geofenceManager.getGeofences();
     if (geofences.length === 0) {
-      // No geofences — switch to wildcard (receive all locations)
+      // No geofences — drop back to whatever the user asked for on its own
+      // (wildcard when they asked for nothing).
       if (this._locationCells.size > 0) {
         this._locationCells.clear();
-        this._roomContext.setFilters(TOPIC_LOCATIONS, []);
-        this._log('Location filters cleared — receiving all locations');
+        this._applyLocationFilters();
+        this._log('Geofence cell filters cleared');
       }
       return;
     }
@@ -308,9 +376,26 @@ export class TrackingZone extends EventEmitter<TrackZoneEvents> {
     const newArr = [...newCells].sort();
     if (oldArr.join(',') !== newArr.join(',')) {
       this._locationCells = newCells;
-      this._roomContext.setFilters(TOPIC_LOCATIONS, newArr);
+      this._applyLocationFilters();
       this._log('Location filters updated:', newArr.length, 'cells');
     }
+  }
+
+  /**
+   * The location filter set actually sent to the server: geofence cells and
+   * user-set values unioned. Empty means wildcard (receive everything).
+   */
+  private _effectiveLocationFilters(): FilterValue[] {
+    return [...this._locationCells, ...this._userFilters];
+  }
+
+  private _applyLocationFilters(): void {
+    // The core types filters as `string[]`, but both its implementation and
+    // the wire protocol accept AND groups (nested arrays).
+    this._roomContext.setFilters(
+      TOPIC_LOCATIONS,
+      this._effectiveLocationFilters() as unknown as string[],
+    );
   }
 
   private _handleIncomingLocation(data: unknown): void {

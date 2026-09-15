@@ -22,4 +22,6 @@ export type {
   IoTPresenceData,
   IoTClientEvents,
   DeviceGroupEvents,
+  FilterValue,
+  JoinGroupOptions,
 } from './types';

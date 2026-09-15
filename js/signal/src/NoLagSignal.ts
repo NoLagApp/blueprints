@@ -15,6 +15,8 @@ import type {
   SignalClientEvents,
   Peer,
   SignalPresenceData,
+  FilterValue,
+  JoinRoomOptions,
 } from './types';
 
 /**
@@ -330,13 +332,16 @@ export class NoLagSignal extends EventEmitter<SignalClientEvents> {
    * Join a signaling room. Creates, subscribes, and activates it.
    * Returns an existing room if already joined.
    */
-  joinRoom(name: string): SignalRoom {
+  joinRoom(name: string, opts?: JoinRoomOptions): SignalRoom {
     this._assertUsable();
 
     let room = this._rooms.get(name);
     if (!room) {
-      room = this._subscribeRoom(name);
+      room = this._subscribeRoom(name, opts?.filters);
       room._activate();
+    } else if (opts?.filters) {
+      // Already joined — re-point its filters rather than ignoring them.
+      room.setFilters(opts.filters);
     }
 
     return room;
@@ -383,7 +388,7 @@ export class NoLagSignal extends EventEmitter<SignalClientEvents> {
 
   // ============ Private: Room Setup ============
 
-  private _subscribeRoom(name: string): SignalRoom {
+  private _subscribeRoom(name: string, filters?: FilterValue[]): SignalRoom {
     this._log('Subscribing room:', name);
 
     const roomContext = this._client.setApp(this._options.appName).setRoom(name);
@@ -397,7 +402,7 @@ export class NoLagSignal extends EventEmitter<SignalClientEvents> {
     );
 
     this._rooms.set(name, room);
-    room._subscribe();
+    room._subscribe(filters);
 
     return room;
   }

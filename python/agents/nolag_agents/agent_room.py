@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from .event_emitter import EventEmitter
 from .types import AgentPresenceData, ConnectedAgent
+from .utils import FilterValue, merge_filters, without_filters
 from .constants import (
     AGENTS_PROTOCOL_VERSION,
     TOPIC_TASKS,
@@ -15,6 +16,22 @@ from .constants import (
     TOPIC_TOOLS,
     TOPIC_APPROVAL,
 )
+
+AgentFilterTopic = Literal["tasks", "tools", "state", "events", "inbox", "approval"]
+
+#: Maps the public topic names onto the wire topics. ``results`` is absent by
+#: design: it carries directed replies keyed to the recipient's agent id, and
+#: repointing its filters would strand every pending result.
+FILTER_TOPICS: dict[str, str] = {
+    "tasks": TOPIC_TASKS,
+    "tools": TOPIC_TOOLS,
+    "state": TOPIC_STATE,
+    "events": TOPIC_EVENTS,
+    "inbox": TOPIC_INBOX,
+    "approval": TOPIC_APPROVAL,
+}
+
+ALL_FILTER_TOPICS: list[str] = list(FILTER_TOPICS)
 
 
 class AgentRoom(EventEmitter):
@@ -35,6 +52,7 @@ class AgentRoom(EventEmitter):
         load_balance: bool = False,
         load_balance_group: str | None = None,
         load_balance_topics: list[str] | None = None,
+        filters: list[FilterValue] | None = None,
     ) -> None:
         super().__init__()
         self.name = name
@@ -47,6 +65,12 @@ class AgentRoom(EventEmitter):
         self._load_balance = load_balance
         self._load_balance_group = load_balance_group
         self._load_balance_topics = set(load_balance_topics or [TOPIC_TASKS, TOPIC_TOOLS])
+
+        # Filter values applied per topic. ``results`` is never included.
+        self._filters: dict[str, list[FilterValue]] = {t: [] for t in ALL_FILTER_TOPICS}
+        if filters:
+            for topic_key in ALL_FILTER_TOPICS:
+                self._filters[topic_key] = list(filters)
 
         # Stored so teardown() removes exactly this room's handlers and leaves
         # any sibling wrapper sharing the client untouched.
@@ -116,26 +140,36 @@ class AgentRoom(EventEmitter):
         from nolag import SubscribeOptions
 
         # Work distribution: connection-level load balance applies
-        for topic in (TOPIC_TASKS, TOPIC_TOOLS):
+        for key in ("tasks", "tools"):
+            topic = FILTER_TOPICS[key]
+            values = self._filters[key] or None
             if self._load_balance and topic in self._load_balance_topics:
                 opts = SubscribeOptions(
                     load_balance=True,
                     load_balance_group=self._load_balance_group or self.agent_id,
+                    filters=values,
                 )
                 self._log(f"subscribing to {topic} with load balance (group={opts.load_balance_group})")
                 await self._room_context.subscribe(topic, opts)
+            elif values:
+                await self._room_context.subscribe(topic, SubscribeOptions(filters=values))
             else:
                 await self._room_context.subscribe(topic)
 
-        # Directed replies: own-agent filter, never load-balanced
+        # Directed replies: own-agent filter, never load-balanced. Deliberately
+        # not user-filterable — see FILTER_TOPICS.
         await self._room_context.subscribe(
             TOPIC_RESULTS,
             SubscribeOptions(load_balance=False, filters=[self.agent_id]),
         )
 
         # Broadcasts: never load-balanced
-        for topic in (TOPIC_STATE, TOPIC_EVENTS, TOPIC_INBOX, TOPIC_APPROVAL):
-            await self._room_context.subscribe(topic, SubscribeOptions(load_balance=False))
+        for key in ("state", "events", "inbox", "approval"):
+            values = self._filters[key] or None
+            await self._room_context.subscribe(
+                FILTER_TOPICS[key],
+                SubscribeOptions(load_balance=False, filters=values),
+            )
 
         if self._presence:
             # Advertise the SDK's protocol version so counterparts can detect
@@ -197,11 +231,19 @@ class AgentRoom(EventEmitter):
     def context(self) -> Any:
         return self._room_context
 
-    async def publish_task(self, envelope: Any) -> None:
+    async def publish_task(
+        self,
+        envelope: Any,
+        filter: str | None = None,
+        filters: list[str] | None = None,
+    ) -> None:
         d = envelope.to_dict() if hasattr(envelope, "to_dict") else envelope
         if not d.get("createdBy"):
             d["createdBy"] = self.agent_id
-        await self._publish(TOPIC_TASKS, d)
+        # Routing by capability (``filter=envelope.capability``) is opt-in: it
+        # only reaches workers that filter on it, and mixing filtered and
+        # wildcard workers in one load-balance pool double-delivers.
+        await self._publish(TOPIC_TASKS, d, filter=filter, filters=filters)
 
     async def publish_result(self, envelope: Any) -> None:
         d = envelope.to_dict() if hasattr(envelope, "to_dict") else envelope
@@ -211,31 +253,121 @@ class AgentRoom(EventEmitter):
         # is set; unfiltered publishes only reach pre-directed-reply SDKs.
         await self._publish(TOPIC_RESULTS, d, filter=d.get("replyTo"))
 
-    async def publish_state(self, data: dict[str, Any]) -> None:
+    async def publish_state(
+        self,
+        data: dict[str, Any],
+        filter: str | None = None,
+        filters: list[str] | None = None,
+    ) -> None:
         if not data.get("updatedBy"):
             data["updatedBy"] = self.agent_id
-        await self._publish(TOPIC_STATE, data, retain=True)
+        await self._publish(TOPIC_STATE, data, retain=True, filter=filter, filters=filters)
 
-    async def publish_event(self, data: dict[str, Any]) -> None:
+    async def publish_event(
+        self,
+        data: dict[str, Any],
+        filter: str | None = None,
+        filters: list[str] | None = None,
+    ) -> None:
         if not data.get("emittedBy"):
             data["emittedBy"] = self.agent_id
-        await self._publish(TOPIC_EVENTS, data)
+        await self._publish(TOPIC_EVENTS, data, filter=filter, filters=filters)
 
-    async def publish_inbox(self, data: dict[str, Any]) -> None:
-        await self._publish(TOPIC_INBOX, data)
+    async def publish_inbox(
+        self,
+        data: dict[str, Any],
+        filter: str | None = None,
+        filters: list[str] | None = None,
+    ) -> None:
+        await self._publish(TOPIC_INBOX, data, filter=filter, filters=filters)
 
-    async def publish_tools(self, data: dict[str, Any]) -> None:
+    async def publish_tools(
+        self,
+        data: dict[str, Any],
+        filter: str | None = None,
+        filters: list[str] | None = None,
+    ) -> None:
         # Requests go to the tools topic (load-balanced one-of-N across
         # server replicas). Responses are directed to the requester on the
         # results topic via filter — never load-balanced, never broadcast.
         reply_to = data.get("replyTo")
         if data.get("type") == "tool_response" and isinstance(reply_to, str) and reply_to:
+            # Responses stay keyed to the requester; a caller filter must not
+            # redirect them away from the agent waiting on the correlation.
             await self._publish(TOPIC_RESULTS, data, filter=reply_to)
             return
-        await self._publish(TOPIC_TOOLS, data)
+        await self._publish(TOPIC_TOOLS, data, filter=filter, filters=filters)
 
-    async def publish_approval(self, data: dict[str, Any]) -> None:
-        await self._publish(TOPIC_APPROVAL, data, retain=True)
+    async def publish_approval(
+        self,
+        data: dict[str, Any],
+        filter: str | None = None,
+        filters: list[str] | None = None,
+    ) -> None:
+        await self._publish(TOPIC_APPROVAL, data, retain=True, filter=filter, filters=filters)
+
+    # ── Filters ──
+
+    @property
+    def filters(self) -> dict[str, list[FilterValue]]:
+        """The filter values currently applied to this room, by topic."""
+        return {k: list(v) for k, v in self._filters.items()}
+
+    async def set_filters(
+        self,
+        values: list[FilterValue],
+        topic: AgentFilterTopic | None = None,
+    ) -> None:
+        """Replace this room's filters.
+
+        Only messages published with one of ``values`` are delivered. Applies
+        to every filterable topic unless scoped with ``topic``.
+
+        The usual case is a worker declaring its capabilities on ``tasks``, so
+        the broker routes only work it can do instead of every worker receiving
+        every task and discarding the rest. Pair it with
+        ``publish_task(envelope, filter=capability)`` on the dispatcher.
+
+        ``results`` is never filtered here: it carries directed replies keyed
+        to this agent's id, and repointing it would strand pending results.
+
+        With load balancing on, keep a worker pool uniform — the broker treats
+        a wildcard and a filtered subscription as separate share groups, so a
+        mixed pool delivers each task twice.
+
+        An empty list clears filtering and restores the wildcard subscription,
+        which receives everything.
+        """
+        for key in self._target_topics(topic):
+            self._filters[key] = list(values)
+            await self._room_context.set_filters(FILTER_TOPICS[key], list(values))
+
+    async def add_filters(
+        self,
+        values: list[str],
+        topic: AgentFilterTopic | None = None,
+    ) -> None:
+        """Add filter values to the existing set. Existing AND groups are kept."""
+        for key in self._target_topics(topic):
+            await self.set_filters(merge_filters(self._filters[key], values), topic=key)
+
+    async def remove_filters(
+        self,
+        values: list[str],
+        topic: AgentFilterTopic | None = None,
+    ) -> None:
+        """Remove filter values. Removing the last one restores the wildcard."""
+        for key in self._target_topics(topic):
+            await self.set_filters(without_filters(self._filters[key], values), topic=key)
+
+    def _target_topics(self, topic: AgentFilterTopic | None) -> list[str]:
+        if topic is None:
+            return list(ALL_FILTER_TOPICS)
+        if topic not in FILTER_TOPICS:
+            raise ValueError(
+                f"unknown filter topic {topic!r}; expected one of {sorted(FILTER_TOPICS)}"
+            )
+        return [topic]
 
     # ── Internals ──
 
@@ -245,13 +377,27 @@ class AgentRoom(EventEmitter):
         data: Any,
         retain: bool = False,
         filter: str | None = None,
+        filters: list[str] | None = None,
     ) -> None:
         self._log(f"publish to {topic} in room {self.name}")
         from nolag import EmitOptions
-        if retain or filter:
-            await self._room_context.emit(topic, data, EmitOptions(retain=retain, filter=filter))
-        else:
+        # ``filter`` wins over ``filters``: a publish is routed to exactly one
+        # topic, so honouring both would silently drop one of them.
+        if filter:
+            filters = None
+        if not (retain or filter or filters):
             await self._room_context.emit(topic, data)
+            return
+
+        # `filters` (AND composite) only exists on nolag >= 2.5.1. Pass it only
+        # when it is actually set, so an older core still handles every other
+        # publish instead of failing on an unknown keyword.
+        opts = (
+            EmitOptions(retain=retain, filter=filter, filters=filters)
+            if filters
+            else EmitOptions(retain=retain, filter=filter)
+        )
+        await self._room_context.emit(topic, data, opts)
 
     def _to_connected_agent(self, actor: Any) -> ConnectedAgent:
         if isinstance(actor, dict):

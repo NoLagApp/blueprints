@@ -58,6 +58,16 @@ export interface StreamComment {
 
 export interface SendCommentOptions {
   data?: Record<string, unknown>;
+  /**
+   * Route this comment to viewers filtering on this value — a language, a
+   * moderator channel, a ticket tier. Unfiltered viewers still receive it.
+   */
+  filter?: string;
+  /**
+   * AND composite filter — reaches only viewers filtering on all of these
+   * values together. Ignored when `filter` is also set.
+   */
+  filters?: string[];
 }
 
 export interface ReactionBurst {
@@ -91,6 +101,36 @@ export interface PollVote {
 export interface CreatePollOptions {
   question: string;
   options: string[];
+  /**
+   * Route this poll to viewers filtering on this value. Votes and the close
+   * event inherit it, so the whole poll stays with one audience.
+   */
+  filter?: string;
+  /**
+   * AND composite filter — reaches only viewers filtering on all of these
+   * values together. Ignored when `filter` is also set.
+   */
+  filters?: string[];
+}
+
+/** The content topics a stream room can filter independently. */
+export type StreamFilterTopic = 'comments' | 'polls';
+
+/** Scope a filter call to one topic instead of both. */
+export interface StreamFilterOptions {
+  /** Which topic to filter. Omit to apply the call to comments and polls. */
+  topic?: StreamFilterTopic;
+}
+
+/** Options for `NoLagStream.joinStream()`. */
+export interface JoinStreamOptions {
+  /**
+   * Only receive comments and polls published with one of these filter
+   * values. Reactions are unaffected — they are ephemeral and stream-wide.
+   *
+   * Omit (or pass an empty array) to receive everything.
+   */
+  filters?: FilterValue[];
 }
 
 export interface StreamPresenceData {
@@ -126,3 +166,15 @@ export interface StreamRoomEvents {
   replayStart: [data: { count: number }];
   replayEnd: [data: { replayed: number }];
 }
+
+
+// ============ Filters ============
+
+/**
+ * A single subscription filter value.
+ *
+ * A plain string is an OR term: `['alice', 'bob']` matches either. A nested
+ * array is an AND group: `[['alice', 'admin']]` matches only what was
+ * published tagged with both.
+ */
+export type FilterValue = string | string[];

@@ -3,7 +3,10 @@ import { EventEmitter } from './EventEmitter';
 import { JobStore } from './JobStore';
 import { WorkerManager } from './WorkerManager';
 import { PresenceManager } from './PresenceManager';
-import { generateId } from './utils';
+import {
+  generateId, filterEmitOptions, inheritFilter, recordedFilter,
+  mergeFilters, withoutFilters,
+} from './utils';
 import { TOPIC_JOBS, TOPIC_PROGRESS, DEFAULT_MAX_ATTEMPTS } from './constants';
 import type { JobFilter } from './JobStore';
 import type {
@@ -14,6 +17,7 @@ import type {
   QueueWorker,
   QueuePresenceData,
   ResolvedQueueOptions,
+  FilterValue,
 } from './types';
 
 /**
@@ -38,6 +42,9 @@ export class QueueRoom extends EventEmitter<QueueRoomEvents> {
   // handlers for a topic (the client may be shared with other consumers).
   private _onJobsRef: ((data: unknown) => void) | null = null;
   private _onProgressRef: ((data: unknown) => void) | null = null;
+
+  /** Filter values applied to the jobs subscription. */
+  private _filters: FilterValue[] = [];
 
   /** @internal */
   constructor(
@@ -85,13 +92,14 @@ export class QueueRoom extends EventEmitter<QueueRoomEvents> {
       createdBy: this._localWorkerId,
       createdAt: now,
       updatedAt: now,
+      filter: recordedFilter(opts),
       isReplay: false,
     };
 
     this._jobStore.add(job);
     this._log('Job added:', job.id, job.type);
 
-    this._roomContext.emit(TOPIC_JOBS, { event: 'jobAdded', job }, { echo: true });
+    this._roomContext.emit(TOPIC_JOBS, { event: 'jobAdded', job }, { echo: true, ...filterEmitOptions(opts) });
     this.emit('jobAdded', job);
 
     return job;
@@ -110,7 +118,7 @@ export class QueueRoom extends EventEmitter<QueueRoomEvents> {
 
     this._log('Job claimed:', jobId, 'by', this._localWorkerId);
 
-    this._roomContext.emit(TOPIC_JOBS, { event: 'jobClaimed', job: updated }, { echo: true });
+    this._roomContext.emit(TOPIC_JOBS, { event: 'jobClaimed', job: updated }, { echo: true, ...inheritFilter(updated.filter) });
     this.emit('jobClaimed', updated);
 
     return updated;
@@ -132,7 +140,7 @@ export class QueueRoom extends EventEmitter<QueueRoomEvents> {
 
     this._log('Job progress:', jobId, job.progress + '%');
 
-    this._roomContext.emit(TOPIC_PROGRESS, progressEvent, { echo: true });
+    this._roomContext.emit(TOPIC_PROGRESS, progressEvent, { echo: true, ...inheritFilter(job.filter) });
     this.emit('jobProgress', progressEvent);
   }
 
@@ -153,7 +161,7 @@ export class QueueRoom extends EventEmitter<QueueRoomEvents> {
 
     this._log('Job completed:', jobId);
 
-    this._roomContext.emit(TOPIC_JOBS, { event: 'jobCompleted', job: completed }, { echo: true });
+    this._roomContext.emit(TOPIC_JOBS, { event: 'jobCompleted', job: completed }, { echo: true, ...inheritFilter(completed.filter) });
     this.emit('jobCompleted', completed);
 
     return completed;
@@ -181,7 +189,7 @@ export class QueueRoom extends EventEmitter<QueueRoomEvents> {
 
     this._log('Job failed:', jobId, 'attempts:', nextAttempts, '/', failed.maxAttempts);
 
-    this._roomContext.emit(TOPIC_JOBS, { event: 'jobFailed', job: failed }, { echo: true });
+    this._roomContext.emit(TOPIC_JOBS, { event: 'jobFailed', job: failed }, { echo: true, ...inheritFilter(failed.filter) });
     this.emit('jobFailed', failed);
 
     // Auto-retry if under maxAttempts
@@ -189,12 +197,60 @@ export class QueueRoom extends EventEmitter<QueueRoomEvents> {
       const retried = this._jobStore.updateStatus(jobId, 'pending');
       if (retried) {
         this._log('Job retrying:', jobId, 'attempt', nextAttempts + 1);
-        this._roomContext.emit(TOPIC_JOBS, { event: 'jobRetrying', job: retried }, { echo: true });
+        this._roomContext.emit(TOPIC_JOBS, { event: 'jobRetrying', job: retried }, { echo: true, ...inheritFilter(retried.filter) });
         this.emit('jobRetrying', retried);
       }
     }
 
     return failed;
+  }
+
+  // ============ Filters ============
+
+  /** The filter values currently applied to this queue's subscription. */
+  get filters(): FilterValue[] {
+    return [...this._filters];
+  }
+
+  /**
+   * Replace this queue's filters — only jobs published with one of these
+   * values are delivered. For a worker this declares its capabilities: it is
+   * offered only the jobs it can actually run, and load balancing still hands
+   * each such job to exactly one matching worker.
+   *
+   * Passing an empty array clears filtering and restores the wildcard
+   * subscription, which receives every job on the queue.
+   *
+   * Not to be confused with `getJobs(filter)`, which filters the local cache
+   * by status/type and does not change what the server sends.
+   *
+   * @example
+   * ```ts
+   * queue.setFilters(['gpu', 'render']);   // gpu OR render jobs
+   * queue.setFilters([['gpu', 'eu-west']]); // gpu AND eu-west
+   * queue.setFilters([]);                   // every job
+   * ```
+   */
+  setFilters(values: FilterValue[]): void {
+    this._filters = [...values];
+    for (const topic of [TOPIC_JOBS, TOPIC_PROGRESS]) {
+      // The core types filters as `string[]`, but both its implementation and
+      // the wire protocol accept AND groups (nested arrays).
+      this._roomContext.setFilters(topic, this._filters as unknown as string[]);
+    }
+  }
+
+  /** Add filter values to the existing set. Existing AND groups are kept. */
+  addFilters(values: string[]): void {
+    this.setFilters(mergeFilters(this._filters, values));
+  }
+
+  /**
+   * Remove filter values from the existing set. Removing the last value
+   * restores the wildcard subscription.
+   */
+  removeFilters(values: string[]): void {
+    this.setFilters(withoutFilters(this._filters, values));
   }
 
   // ============ Monitor / Query Methods ============
@@ -244,8 +300,13 @@ export class QueueRoom extends EventEmitter<QueueRoomEvents> {
   // ============ Internal (called by NoLagQueue) ============
 
   /** @internal Subscribe to jobs and progress topics, attach listeners */
-  _subscribe(): void {
+  _subscribe(filters?: FilterValue[]): void {
     this._log('Room subscribe:', this.name);
+
+    this._filters = filters ? [...filters] : [];
+    // Filters and load balancing compose: the server shares each filtered
+    // sub-topic across the group, so one matching worker claims each job.
+    const filterOpts = this._filters.length > 0 ? { filters: this._filters } : {};
 
     // Workers use load balancing so each job event is delivered to only ONE worker
     // (round-robin across all workers in the same group). Producers and monitors
@@ -253,11 +314,20 @@ export class QueueRoom extends EventEmitter<QueueRoomEvents> {
     if (this._options.role === 'worker') {
       const group = this._options.loadBalanceGroup ?? `queue-workers-${this.name}`;
       this._log('Subscribing with load balance, group:', group);
-      this._roomContext.subscribe(TOPIC_JOBS, { loadBalance: true, loadBalanceGroup: group });
+      this._roomContext.subscribe(TOPIC_JOBS, { loadBalance: true, loadBalanceGroup: group, ...filterOpts });
+    } else if (this._filters.length > 0) {
+      this._roomContext.subscribe(TOPIC_JOBS, filterOpts);
     } else {
       this._roomContext.subscribe(TOPIC_JOBS);
     }
-    this._roomContext.subscribe(TOPIC_PROGRESS);
+
+    // Progress is never load balanced — every monitor wants every update —
+    // but it carries the job's filter so it tracks the jobs topic.
+    if (this._filters.length > 0) {
+      this._roomContext.subscribe(TOPIC_PROGRESS, filterOpts);
+    } else {
+      this._roomContext.subscribe(TOPIC_PROGRESS);
+    }
 
     // Listen for job lifecycle messages (refs stored for handler-specific removal)
     this._onJobsRef = (data: unknown) => {

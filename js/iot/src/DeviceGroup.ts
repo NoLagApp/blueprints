@@ -3,7 +3,7 @@ import { EventEmitter } from './EventEmitter';
 import { PresenceManager } from './PresenceManager';
 import { TelemetryStore } from './TelemetryStore';
 import { CommandManager } from './CommandManager';
-import { generateId } from './utils';
+import { generateId, filterEmitOptions, mergeFilters, withoutFilters } from './utils';
 import { TOPIC_TELEMETRY, TOPIC_COMMANDS, TOPIC_CMD_ACK } from './constants';
 import type {
   DeviceGroupEvents,
@@ -14,6 +14,7 @@ import type {
   IoTPresenceData,
   ResolvedIoTOptions,
   CommandStatus,
+  FilterValue,
 } from './types';
 
 /**
@@ -40,6 +41,12 @@ export class DeviceGroup extends EventEmitter<DeviceGroupEvents> {
   private _onTelemetryRef: ((data: unknown) => void) | null = null;
   private _onCommandsRef: ((data: unknown) => void) | null = null;
   private _onCmdAckRef: ((data: unknown) => void) | null = null;
+
+  /**
+   * Filter values applied to the telemetry subscription. Commands and acks are
+   * deliberately excluded: they route by deviceId internally.
+   */
+  private _filters: FilterValue[] = [];
 
   /** @internal */
   constructor(
@@ -92,7 +99,7 @@ export class DeviceGroup extends EventEmitter<DeviceGroupEvents> {
     };
 
     this._log('Sending telemetry:', sensorId, '=', value);
-    this._roomContext.emit(TOPIC_TELEMETRY, reading, { echo: false });
+    this._roomContext.emit(TOPIC_TELEMETRY, reading, { echo: false, ...filterEmitOptions(opts) });
 
     // Store locally so the sender also has it in the buffer
     this._telemetryStore.add(reading);
@@ -183,13 +190,64 @@ export class DeviceGroup extends EventEmitter<DeviceGroupEvents> {
     return this._presenceManager.getDevice(deviceId);
   }
 
+  // ============ Filters ============
+
+  /** The filter values currently applied to this group's telemetry. */
+  get filters(): FilterValue[] {
+    return [...this._filters];
+  }
+
+  /**
+   * Replace this group's telemetry filters — only readings published with one
+   * of these values are delivered. Use it to watch one site or sensor class
+   * instead of every device in the group.
+   *
+   * Commands and command acks are not affected: those route by deviceId
+   * internally, and repointing them would break command delivery.
+   *
+   * Passing an empty array clears filtering and restores the wildcard
+   * subscription, which receives all telemetry.
+   *
+   * @example
+   * ```ts
+   * group.setFilters(['site-a']);                // one site
+   * group.setFilters([['site-a', 'critical']]);  // site-a AND critical
+   * group.setFilters([]);                         // all telemetry
+   * ```
+   */
+  setFilters(values: FilterValue[]): void {
+    this._filters = [...values];
+    // The core types filters as `string[]`, but both its implementation and
+    // the wire protocol accept AND groups (nested arrays).
+    this._roomContext.setFilters(TOPIC_TELEMETRY, this._filters as unknown as string[]);
+  }
+
+  /** Add filter values to the existing set. Existing AND groups are kept. */
+  addFilters(values: string[]): void {
+    this.setFilters(mergeFilters(this._filters, values));
+  }
+
+  /**
+   * Remove filter values from the existing set. Removing the last value
+   * restores the wildcard subscription.
+   */
+  removeFilters(values: string[]): void {
+    this.setFilters(withoutFilters(this._filters, values));
+  }
+
   // ============ Internal (called by NoLagIoT) ============
 
   /** @internal Subscribe to all group topics and attach listeners */
-  _subscribe(): void {
+  _subscribe(filters?: FilterValue[]): void {
     this._log('Group subscribe:', this.name);
 
-    this._roomContext.subscribe(TOPIC_TELEMETRY);
+    this._filters = filters ? [...filters] : [];
+
+    if (this._filters.length > 0) {
+      this._roomContext.subscribe(TOPIC_TELEMETRY, { filters: this._filters });
+    } else {
+      this._roomContext.subscribe(TOPIC_TELEMETRY);
+    }
 
     // Commands: devices subscribe with their deviceId as filter so they only
     // receive commands targeted at them. Controllers subscribe as wildcard

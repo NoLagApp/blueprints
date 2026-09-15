@@ -3,7 +3,7 @@ import { EventEmitter } from './EventEmitter';
 import { PresenceManager } from './PresenceManager';
 import { OperationStore } from './OperationStore';
 import { AwarenessManager } from './AwarenessManager';
-import { generateId } from './utils';
+import { generateId, filterEmitOptions, mergeFilters, withoutFilters } from './utils';
 import { TOPIC_OPERATIONS, TOPIC_CURSORS } from './constants';
 import type {
   CollabDocumentEvents,
@@ -16,6 +16,7 @@ import type {
   SendOperationOptions,
   UserStatus,
   ResolvedCollabOptions,
+  FilterValue,
 } from './types';
 
 /**
@@ -48,6 +49,9 @@ export class CollabDocument extends EventEmitter<CollabDocumentEvents> {
   // handlers for a topic (the client may be shared with other consumers).
   private _onOperationsRef: ((data: unknown) => void) | null = null;
   private _onCursorsRef: ((data: unknown) => void) | null = null;
+
+  /** Filter values applied to the operations subscription. */
+  private _filters: FilterValue[] = [];
 
   /** @internal */
   constructor(
@@ -102,9 +106,51 @@ export class CollabDocument extends EventEmitter<CollabDocumentEvents> {
     this._log('Sending operation:', type, op.id);
 
     this._operationStore.add(op);
-    this._roomContext.emit(TOPIC_OPERATIONS, op, { echo: false });
+    this._roomContext.emit(TOPIC_OPERATIONS, op, { echo: false, ...filterEmitOptions(opts) });
 
     return op;
+  }
+
+  // ============ Filters ============
+
+  /** The filter values currently applied to this document's operations. */
+  get filters(): FilterValue[] {
+    return [...this._filters];
+  }
+
+  /**
+   * Replace this document's operation filters — only operations published with
+   * one of these values are delivered. Useful for scoping a large document to
+   * the section or file path a client is actually editing.
+   *
+   * Passing an empty array clears filtering and restores the wildcard
+   * subscription, which receives every operation.
+   *
+   * @example
+   * ```ts
+   * doc.setFilters(['src/index.ts']);        // one path
+   * doc.setFilters([['src/index.ts', 'v2']]); // that path AND v2
+   * doc.setFilters([]);                       // everything
+   * ```
+   */
+  setFilters(values: FilterValue[]): void {
+    this._filters = [...values];
+    // The core types filters as `string[]`, but both its implementation and
+    // the wire protocol accept AND groups (nested arrays).
+    this._roomContext.setFilters(TOPIC_OPERATIONS, this._filters as unknown as string[]);
+  }
+
+  /** Add filter values to the existing set. Existing AND groups are kept. */
+  addFilters(values: string[]): void {
+    this.setFilters(mergeFilters(this._filters, values));
+  }
+
+  /**
+   * Remove filter values from the existing set. Removing the last value
+   * restores the wildcard subscription.
+   */
+  removeFilters(values: string[]): void {
+    this.setFilters(withoutFilters(this._filters, values));
   }
 
   /**
@@ -177,10 +223,17 @@ export class CollabDocument extends EventEmitter<CollabDocumentEvents> {
   // ============ Internal (called by NoLagCollab) ============
 
   /** @internal Subscribe to operations and cursors topics and attach listeners */
-  _subscribe(): void {
+  _subscribe(filters?: FilterValue[]): void {
     this._log('Document subscribe:', this.name);
 
-    this._roomContext.subscribe(TOPIC_OPERATIONS);
+    this._filters = filters ? [...filters] : [];
+
+    // Cursors stay unfiltered: awareness is ephemeral and document-wide.
+    if (this._filters.length > 0) {
+      this._roomContext.subscribe(TOPIC_OPERATIONS, { filters: this._filters });
+    } else {
+      this._roomContext.subscribe(TOPIC_OPERATIONS);
+    }
     this._roomContext.subscribe(TOPIC_CURSORS);
 
     // Listen for operations (refs stored for handler-specific removal)

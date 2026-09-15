@@ -6,7 +6,7 @@ from typing import Any
 
 from .event_emitter import EventEmitter
 from .agent_room import AgentRoom
-from .utils import generate_id, create_logger
+from .utils import generate_id, create_logger, FilterValue
 from .constants import DEFAULT_APP_NAME, DEFAULT_ROOM
 from .types import NoLagAgentsOptions, AgentPresenceData
 
@@ -290,9 +290,16 @@ class NoLagAgents(EventEmitter):
             self._ready_event.set()
         self._emit("detached")
 
-    async def room(self, name: str) -> AgentRoom:
+    async def room(
+        self,
+        name: str,
+        filters: list[FilterValue] | None = None,
+    ) -> AgentRoom:
         agent_room = self._rooms.get(name)
         if agent_room:
+            # Already joined — re-point its filters rather than ignoring them.
+            if filters is not None:
+                await agent_room.set_filters(filters)
             return agent_room
 
         if not self._app_context:
@@ -310,6 +317,7 @@ class NoLagAgents(EventEmitter):
             load_balance=self._load_balance,
             load_balance_group=self._load_balance_group,
             load_balance_topics=self._load_balance_topics,
+            filters=filters,
         )
         await agent_room.initialize()
         self._rooms[name] = agent_room
