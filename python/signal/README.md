@@ -78,3 +78,7 @@ asyncio.run(main())
 | `signal` | `message: SignalMessage` | Incoming signal |
 | `peer_joined` | `peer: Peer` | Peer joined room |
 | `peer_left` | `peer: Peer` | Peer left room |
+
+## License
+
+MIT
